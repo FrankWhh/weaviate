@@ -23,6 +23,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/weaviate/sroar"
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
+	"github.com/weaviate/weaviate/adapters/repos/db/inverted/terms"
 	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv/segmentindex"
 	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv/varenc"
 	"github.com/weaviate/weaviate/entities/additional"
@@ -79,6 +80,8 @@ type convertedInverted struct {
 	statsDeletedDocsNoText       uint64
 
 	documentsToUpdate *sroar.Bitmap
+	docIdEncoder      varenc.VarEncEncoder[uint64]
+	tfEncoder         varenc.VarEncEncoder[uint64]
 }
 
 func newConvertedInverted(w io.WriteSeeker,
@@ -177,6 +180,11 @@ func (c *convertedInverted) init() error {
 		DataFieldCount:        uint8(len(dataFields)),
 		DataFields:            dataFields,
 	}
+
+	c.docIdEncoder = varenc.GetVarEncEncoder64(c.invertedHeader.DataFields[0])
+	c.docIdEncoder.Init(terms.BLOCK_SIZE)
+	c.tfEncoder = varenc.GetVarEncEncoder64(c.invertedHeader.DataFields[1])
+	c.tfEncoder.Init(terms.BLOCK_SIZE)
 
 	return nil
 }
@@ -285,7 +293,7 @@ func (c *convertedInverted) writeIndividualNode(offset int, key []byte,
 		primaryKey:  keyCopy,
 		offset:      offset,
 		propLengths: propertyLengths,
-	}.KeyIndexAndWriteTo(c.bufw)
+	}.KeyIndexAndWriteTo(c.bufw, c.docIdEncoder, c.tfEncoder)
 }
 
 func (c *convertedInverted) writeIndices(keys []segmentindex.Key) error {

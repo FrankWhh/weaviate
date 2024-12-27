@@ -145,8 +145,12 @@ type VarIntEncoder struct {
 }
 
 func (e *VarIntEncoder) Init(expectedCount int) {
-	e.values = make([]uint64, expectedCount)
-	e.buf = make([]byte, 8+8*expectedCount)
+	if len(e.values) < expectedCount {
+		e.values = make([]uint64, expectedCount)
+	}
+	if len(e.buf) < 8+8*expectedCount {
+		e.buf = make([]byte, 8+8*expectedCount)
+	}
 }
 
 func (e VarIntEncoder) EncodeReusable(values []uint64, buf []byte) {
@@ -173,8 +177,12 @@ type VarIntDeltaEncoder struct {
 }
 
 func (e *VarIntDeltaEncoder) Init(expectedCount int) {
-	e.values = make([]uint64, expectedCount)
-	e.buf = make([]byte, 8+8*expectedCount)
+	if len(e.values) < expectedCount {
+		e.values = make([]uint64, expectedCount)
+	}
+	if len(e.buf) < 8+8*expectedCount {
+		e.buf = make([]byte, 8+8*expectedCount)
+	}
 }
 
 func (e VarIntDeltaEncoder) EncodeReusable(values []uint64, buf []byte) {

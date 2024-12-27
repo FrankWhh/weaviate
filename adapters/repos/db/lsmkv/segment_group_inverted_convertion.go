@@ -23,6 +23,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/weaviate/sroar"
 	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv/segmentindex"
+	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv/varenc"
 	"github.com/weaviate/weaviate/entities/models"
 )
 
@@ -154,6 +155,121 @@ func (sg *SegmentGroup) convertOnce(objectBucket *Bucket, idBucket *Bucket, curr
 
 	if err := sg.replaceCompactedSegment(index, path); err != nil {
 		return false, errors.Wrap(err, "replace converted segments")
+	}
+
+	return true, nil
+}
+
+func (sg *SegmentGroup) findInvertedRecompactionCandidates(types []varenc.VarEncDataType) (*segment, int, error) {
+	// if true, the parent shard has indicated that it has
+	// entered an immutable state. During this time, the
+	// SegmentGroup should refrain from flushing until its
+	// shard indicates otherwise
+	if sg.isReadyOnly() {
+		return nil, 0, nil
+	}
+
+	// as newest segments are prioritized, loop in reverse order
+	for id := len(sg.segments) - 1; id >= 0; id-- {
+		if sg.segments[id].strategy == segmentindex.StrategyInverted {
+			for h, t := range types {
+				if sg.segments[id].invertedHeader.DataFields[h] != t {
+					return sg.segments[id], id, nil
+				}
+			}
+		}
+	}
+	return nil, 0, nil
+}
+
+func (sg *SegmentGroup) recompressOnce(types []varenc.VarEncDataType) (bool, error) {
+	sg.maintenanceLock.Lock()
+	defer sg.maintenanceLock.Unlock()
+	segment, index, err := sg.findInvertedRecompactionCandidates(types)
+
+	if segment == nil {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, err
+	}
+
+	if sg.allocChecker != nil {
+		// allocChecker is optional
+		if err := sg.allocChecker.CheckAlloc(100 * 1024 * 1024); err != nil {
+			// if we don't have at least 100MB to spare, don't start a compaction. A
+			// compaction does not actually need a 100MB, but it will create garbage
+			// that needs to be cleaned up. If we're so close to the memory limit, we
+			// can increase stability by preventing anything that's not strictly
+			// necessary. Compactions can simply resume when the cluster has been
+			// scaled.
+			sg.logger.WithFields(logrus.Fields{
+				"action": "lsm_recompression",
+				"event":  "recompression_skipped_oom",
+				"path":   sg.dir,
+			}).WithError(err).
+				Warnf("skipping recompression due to memory pressure")
+
+			return false, nil
+		}
+	}
+
+	path := filepath.Join(sg.dir, "segment-"+segmentID(segment.path)+".db.tmp")
+
+	f, err := os.Create(path)
+	if err != nil {
+		return false, err
+	}
+
+	scratchSpacePath := segment.path + "recompression.scratch.d"
+
+	pathLabel := "n/a"
+	if sg.metrics != nil && !sg.metrics.groupClasses {
+		pathLabel = sg.dir
+	}
+	size := segment.size
+	fmt.Println("Recompressing segment: ", segment.path, size)
+
+	c := newConvertedInvertedCompress(f,
+		segment.newInvertedCursorReusable(), scratchSpacePath, types)
+
+	if sg.metrics != nil {
+		sg.metrics.CompactionMap.With(prometheus.Labels{"path": pathLabel}).Inc()
+		defer sg.metrics.CompactionMap.With(prometheus.Labels{"path": pathLabel}).Dec()
+	}
+	start := time.Now()
+	if err := c.do(); err != nil {
+		return false, err
+	}
+
+	if err := f.Sync(); err != nil {
+		return false, errors.Wrap(err, "fsync converted segment file")
+	}
+
+	end := time.Now()
+
+	newSize, err := f.Stat()
+	if err != nil {
+		return false, errors.Wrap(err, "stat recompressed segment file")
+	}
+
+	if err := f.Close(); err != nil {
+		return false, errors.Wrap(err, "close recompressed segment file")
+	}
+
+	sg.logger.WithFields(logrus.Fields{
+		"action": "lsm_compaction",
+		"event":  "recompression_done",
+		"path":   path,
+		"took":   end.Sub(start),
+	}).Debug("Ccnvertion done")
+
+	// time
+	fmt.Println("Recompressed segment: ", segment.path, size, newSize.Size(), end.Sub(start).Seconds())
+
+	if err := sg.replaceCompactedSegment(index, path); err != nil {
+		return false, errors.Wrap(err, "replace recompressed segments")
 	}
 
 	return true, nil

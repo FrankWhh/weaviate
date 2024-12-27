@@ -162,6 +162,7 @@ func NewSegmentBlockMax(s *segment, key []byte, queryTermIndex int, idf float64,
 
 	for i, codec := range codecs {
 		decoders[i] = varenc.GetVarEncEncoder64(codec)
+		decoders[i].Init(terms.BLOCK_SIZE)
 	}
 
 	output := &SegmentBlockMax{

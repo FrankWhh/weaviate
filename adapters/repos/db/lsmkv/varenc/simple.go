@@ -77,7 +77,7 @@ func (e SimpleEncoder[T]) EncodeReusable(values []T, buf []byte) {
 }
 
 func (e SimpleEncoder[T]) DecodeReusable(data []byte, values []T) {
-	count := binary.LittleEndian.Uint64(data)
+	count := len(values)
 	len := e.elementSize
 	for i := 0; i < int(count); i++ {
 		e.decode(data[8+i*len:8+(i+1)*len], &values[i])

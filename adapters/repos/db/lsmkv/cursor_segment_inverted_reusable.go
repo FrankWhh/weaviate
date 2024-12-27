@@ -79,6 +79,33 @@ func (s *segmentCursorInvertedReusable) first() ([]byte, []MapPair, error) {
 	return s.nodeBuf.key, s.nodeBuf.values, nil
 }
 
+func (s *segmentCursorInvertedReusable) nextNoDecode() ([]byte, []byte, error) {
+	if s.nextOffset >= s.segment.dataEndPos {
+		return nil, nil, lsmkv.NotFound
+	}
+
+	values, err := s.parseInvertedNodeIntoDontDecode(nodeOffset{start: s.nextOffset})
+	if err != nil {
+		return s.nodeBuf.key, nil, err
+	}
+
+	return s.nodeBuf.key, values, nil
+}
+
+func (s *segmentCursorInvertedReusable) firstNoDecode() ([]byte, []byte, error) {
+	s.nextOffset = s.segment.dataStartPos
+
+	if s.nextOffset >= s.segment.dataEndPos {
+		return nil, nil, lsmkv.NotFound
+	}
+
+	values, err := s.parseInvertedNodeIntoDontDecode(nodeOffset{start: s.nextOffset})
+	if err != nil {
+		return s.nodeBuf.key, nil, err
+	}
+	return s.nodeBuf.key, values, nil
+}
+
 func (s *segmentCursorInvertedReusable) parseInvertedNodeInto(offset nodeOffset) error {
 	buffer := make([]byte, 16)
 	r, err := s.segment.newNodeReader(offset)
@@ -135,4 +162,59 @@ func (s *segmentCursorInvertedReusable) parseInvertedNodeInto(offset nodeOffset)
 	s.nextOffset = offset.end
 
 	return nil
+}
+
+func (s *segmentCursorInvertedReusable) parseInvertedNodeIntoDontDecode(offset nodeOffset) ([]byte, error) {
+	buffer := make([]byte, 16)
+	r, err := s.segment.newNodeReader(offset)
+	if err != nil {
+		return nil, err
+	}
+	if offset.end == 0 {
+		_, err := r.Read(buffer)
+		if err != nil {
+			return nil, err
+		}
+		docCount := binary.LittleEndian.Uint64(buffer[:8])
+		end := uint64(20)
+		if docCount > uint64(terms.ENCODE_AS_FULL_BYTES) {
+			end = binary.LittleEndian.Uint64(buffer[8:16]) + 16
+		}
+		offset.end = offset.start + end + 4
+	}
+
+	r, err = s.segment.newNodeReader(offset)
+	if err != nil {
+		return nil, err
+	}
+
+	allBytes := make([]byte, offset.end-offset.start)
+
+	_, err = r.Read(allBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	keyLen := binary.LittleEndian.Uint32(allBytes[len(allBytes)-4:])
+
+	offset.start = offset.end
+	offset.end += uint64(keyLen)
+	r, err = s.segment.newNodeReader(offset)
+	if err != nil {
+		return nil, err
+	}
+
+	key := make([]byte, keyLen)
+	_, err = r.Read(key)
+	if err != nil {
+		return nil, err
+	}
+
+	s.nodeBuf = &binarySearchNodeMap{
+		key: key,
+	}
+
+	s.nextOffset = offset.end
+
+	return allBytes, nil
 }
