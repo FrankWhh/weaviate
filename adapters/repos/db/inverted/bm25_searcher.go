@@ -333,7 +333,9 @@ func (b *BM25Searcher) getTopKIds(topKHeap *priorityqueue.Queue[[]*terms.DocPoin
 		res := topKHeap.Pop()
 		ids = append(ids, res.ID)
 		scores = append(scores, res.Dist)
-		explanations = append(explanations, res.Value)
+		if res.Value != nil {
+			explanations = append(explanations, res.Value)
+		}
 	}
 	return ids, scores, explanations, nil
 }
