@@ -188,6 +188,7 @@ type TermInterface interface {
 	IdPointer() uint64
 	Exhausted() bool
 	Count() int
+	QueryTerm() string
 	QueryTermIndex() int
 	AdvanceAtLeast(minID uint64)
 	AdvanceAtLeastShallow(minID uint64)
@@ -331,7 +332,7 @@ func (t *Terms) FindMinIDWand(minScore float64) (uint64, int, bool) {
 		if term.Exhausted() {
 			continue
 		}
-		cumScore += float64(term.CurrentBlockImpact())
+		cumScore += float64(term.Idf())
 		if cumScore >= minScore {
 			return term.IdPointer(), i, false
 		}
@@ -349,7 +350,7 @@ func (t *Terms) Pivot(minScore float64) bool {
 		return false
 	}
 
-	t.AdvanceAllAtLeast(minID, len(t.T)-1)
+	t.AdvanceAllAtLeast(minID, len(t.T))
 
 	// we don't need to sort the entire list, just the first pivotPoint elements
 	t.SortFirst()
@@ -357,13 +358,14 @@ func (t *Terms) Pivot(minScore float64) bool {
 	return false
 }
 
+//go:inline
 func (t *Terms) AdvanceAllAtLeast(minID uint64, pivot int) {
 	for i := range t.T[:pivot] {
 		t.T[i].AdvanceAtLeast(minID)
 	}
 }
 
-func (t *Terms) FindMinID(minScore float64) (uint64, int, bool) {
+func (t *Terms) FindMinID(minScore float64) (uint64, int) {
 	cumScore := float64(0)
 	for i, term := range t.T {
 		if term.Exhausted() {
@@ -374,14 +376,14 @@ func (t *Terms) FindMinID(minScore float64) (uint64, int, bool) {
 			// find if there is another term with the same id
 			for j := i + 1; j < len(t.T); j++ {
 				if t.T[j].IdPointer() != term.IdPointer() {
-					return t.T[j-1].IdPointer(), j - 1, false
+					return t.T[j-1].IdPointer(), j - 1
 				}
 			}
-			return t.T[len(t.T)-1].IdPointer(), len(t.T) - 1, false
+			return t.T[len(t.T)-1].IdPointer(), len(t.T) - 1
 		}
 	}
 
-	return 0, 0, true
+	return t.T[0].IdPointer(), 0
 }
 
 func (t *Terms) FindFirstNonExhausted() (int, bool) {
@@ -463,7 +465,7 @@ func (t *Terms) SortFirst() {
 
 func (t *Terms) SortPartial(nextList int) {
 	for i := nextList + 1; i < len(t.T); i++ {
-		if t.T[i].IdPointer() <= t.T[i-1].IdPointer() {
+		if t.T[i].IdPointer() < t.T[i-1].IdPointer() {
 			// swap
 			t.T[i], t.T[i-1] = t.T[i-1], t.T[i]
 		} else {

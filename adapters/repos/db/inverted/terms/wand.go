@@ -38,19 +38,19 @@ func DoWand(limit int, results *Terms, averagePropLength float64, additionalExpl
 
 func DoBlockMaxWand(limit int, results *Terms, averagePropLength float64, additionalExplanations bool,
 ) *priorityqueue.Queue[[]*DocPointerWithScore] {
-	// averagePropLength = 40
 	var docInfos []*DocPointerWithScore
 	topKHeap := priorityqueue.NewMinWithId[[]*DocPointerWithScore](limit)
 	worstDist := float64(-10000) // tf score can be negative
-
 	results.SortFull()
 	for {
 		if results.CompletelyExhausted() {
 			return topKHeap
 		}
 
-		pivotID, pivotPoint, notFoundPivot := results.FindMinID(worstDist)
-		if notFoundPivot {
+		// id := uint64(0)
+		pivotID, pivotPoint := results.FindMinID(worstDist)
+
+		if pivotID == math.MaxUint64 {
 			return topKHeap
 		}
 
@@ -83,8 +83,9 @@ func DoBlockMaxWand(limit int, results *Terms, averagePropLength float64, additi
 					}
 					term.Advance()
 				}
-
-				topKHeap.InsertAndPop(pivotID, float64(score), limit, &worstDist, docInfos)
+				if topKHeap.ShouldEnqueue(score, limit) {
+					topKHeap.InsertAndPop(pivotID, float64(score), limit, &worstDist, docInfos)
+				}
 
 				results.SortFull()
 			} else {
