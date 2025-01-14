@@ -128,9 +128,9 @@ type SegmentBlockMax struct {
 	blockDataSize        int
 	blockDataStartOffset uint64
 	blockDataEndOffset   uint64
-	idPointer            uint64
+	IdPointerVal         uint64
 	idf                  float64
-	exhausted            bool
+	ExhaustedVal         bool
 	decoded              bool
 	freqDecoded          bool
 	queryTermIndex       int
@@ -140,10 +140,10 @@ type SegmentBlockMax struct {
 	k1                   float32
 	propertyBoost        float32
 
-	currentBlockImpact float32
-	currentBlockMaxId  uint64
-	tombstones         *sroar.Bitmap
-	filterDocIds       helpers.AllowList
+	CurrentBlockImpactVal float32
+	CurrentBlockMaxIdVal  uint64
+	tombstones            *sroar.Bitmap
+	filterDocIds          helpers.AllowList
 
 	// at position 0 we have the doc ids decoder, at position 1 is the tfs decoder
 	decoders []varenc.VarEncEncoder[uint64]
@@ -232,7 +232,7 @@ func NewSegmentBlockMaxTest(docCount uint64, blockEntries []*terms.BlockEntry, b
 }
 
 func (s *SegmentBlockMax) advanceOnTombstoneOrFilter() {
-	if s.exhausted || (s.filterDocIds == nil && s.tombstones != nil) {
+	if s.ExhaustedVal || (s.filterDocIds == nil && s.tombstones == nil) {
 		return
 	}
 
@@ -241,10 +241,10 @@ func (s *SegmentBlockMax) advanceOnTombstoneOrFilter() {
 		s.blockDataIdx++
 		if s.blockDataIdx > s.blockDataSize-1 {
 			if s.blockEntryIdx >= len(s.blockEntries)-1 {
-				s.idPointer = math.MaxUint64
-				s.currentBlockImpact = 0
-				s.currentBlockMaxId = math.MaxUint64
-				s.exhausted = true
+				s.IdPointerVal = math.MaxUint64
+				s.CurrentBlockImpactVal = 0
+				s.CurrentBlockMaxIdVal = math.MaxUint64
+				s.ExhaustedVal = true
 				return
 			}
 			s.blockEntryIdx++
@@ -289,7 +289,7 @@ func (s *SegmentBlockMax) reset() error {
 }
 
 func (s *SegmentBlockMax) decodeBlock() error {
-	if s.exhausted {
+	if s.ExhaustedVal {
 		return nil
 	}
 
@@ -299,17 +299,17 @@ func (s *SegmentBlockMax) decodeBlock() error {
 	}
 
 	if s.blockEntryIdx >= len(s.blockEntries) {
-		s.idPointer = math.MaxUint64
-		s.currentBlockImpact = 0
-		s.currentBlockMaxId = math.MaxUint64
+		s.IdPointerVal = math.MaxUint64
+		s.CurrentBlockImpactVal = 0
+		s.CurrentBlockMaxIdVal = math.MaxUint64
 		s.decoded = true
-		s.exhausted = true
+		s.ExhaustedVal = true
 		return nil
 	}
 
 	s.blockDataIdx = 0
 	if s.docCount <= uint64(terms.ENCODE_AS_FULL_BYTES) {
-		s.idPointer = s.blockDataDecoded.DocIds[s.blockDataIdx]
+		s.IdPointerVal = s.blockDataDecoded.DocIds[s.blockDataIdx]
 		s.blockDataSize = int(s.docCount)
 		s.freqDecoded = true
 		s.decoded = true
@@ -339,16 +339,16 @@ func (s *SegmentBlockMax) decodeBlock() error {
 	s.decoders[0].DecodeReusable(s.blockDataEncoded.DocIds, s.blockDataDecoded.DocIds[:s.blockDataSize])
 	s.Metrics.BlockCountDecodedDocIds++
 	s.Metrics.DocCountDecodedDocIds += uint64(s.blockDataSize)
-	s.idPointer = s.blockDataDecoded.DocIds[s.blockDataIdx]
+	s.IdPointerVal = s.blockDataDecoded.DocIds[s.blockDataIdx]
 	s.freqDecoded = false
 	s.decoded = true
-	s.currentBlockImpact = s.computeCurrentBlockImpact()
-	s.currentBlockMaxId = s.blockEntries[s.blockEntryIdx].MaxId
+	s.CurrentBlockImpactVal = s.computeCurrentBlockImpact()
+	s.CurrentBlockMaxIdVal = s.blockEntries[s.blockEntryIdx].MaxId
 	return nil
 }
 
 func (s *SegmentBlockMax) AdvanceAtLeast(docId uint64) {
-	if s.exhausted {
+	if s.ExhaustedVal {
 		return
 	}
 
@@ -359,10 +359,10 @@ func (s *SegmentBlockMax) AdvanceAtLeast(docId uint64) {
 	}
 
 	if (s.blockEntryIdx == len(s.blockEntries)-1 && docId > s.blockEntries[s.blockEntryIdx].MaxId) || s.blockEntryIdx >= len(s.blockEntries) {
-		s.idPointer = math.MaxUint64
-		s.currentBlockImpact = 0
-		s.currentBlockMaxId = math.MaxUint64
-		s.exhausted = true
+		s.IdPointerVal = math.MaxUint64
+		s.CurrentBlockImpactVal = 0
+		s.CurrentBlockMaxIdVal = math.MaxUint64
+		s.ExhaustedVal = true
 		return
 	}
 
@@ -378,8 +378,8 @@ func (s *SegmentBlockMax) AdvanceAtLeast(docId uint64) {
 	// s.idPointer = s.blockDataDecoded.DocIds[s.blockDataIdx]
 
 	s.advanceOnTombstoneOrFilter()
-	if !s.exhausted {
-		s.idPointer = s.blockDataDecoded.DocIds[s.blockDataIdx]
+	if !s.ExhaustedVal {
+		s.IdPointerVal = s.blockDataDecoded.DocIds[s.blockDataIdx]
 	}
 }
 
@@ -406,7 +406,7 @@ func (s *SegmentBlockMax) AdvanceAtLeastShallow(docId uint64) {
 		return
 	*/
 
-	if s.exhausted {
+	if s.ExhaustedVal {
 		return
 	}
 	if docId <= s.blockEntries[s.blockEntryIdx].MaxId {
@@ -420,24 +420,24 @@ func (s *SegmentBlockMax) AdvanceAtLeastShallow(docId uint64) {
 		s.decoded = false
 		s.freqDecoded = false
 		if s.blockEntryIdx >= len(s.blockEntries) {
-			s.idPointer = math.MaxUint64
-			s.currentBlockImpact = 0
-			s.currentBlockMaxId = math.MaxUint64
-			s.exhausted = true
+			s.IdPointerVal = math.MaxUint64
+			s.CurrentBlockImpactVal = 0
+			s.CurrentBlockMaxIdVal = math.MaxUint64
+			s.ExhaustedVal = true
 			return
 		}
 	}
 
 	if (s.blockEntryIdx == len(s.blockEntries)-1 && docId > s.blockEntries[s.blockEntryIdx].MaxId) || s.blockEntryIdx >= len(s.blockEntries) {
-		s.idPointer = math.MaxUint64
-		s.currentBlockImpact = 0
-		s.currentBlockMaxId = math.MaxUint64
-		s.exhausted = true
+		s.IdPointerVal = math.MaxUint64
+		s.CurrentBlockImpactVal = 0
+		s.CurrentBlockMaxIdVal = math.MaxUint64
+		s.ExhaustedVal = true
 		return
 	}
-	s.idPointer = s.blockEntries[s.blockEntryIdx-1].MaxId
-	s.currentBlockMaxId = s.blockEntries[s.blockEntryIdx].MaxId
-	s.currentBlockImpact = s.computeCurrentBlockImpact()
+	s.IdPointerVal = s.blockEntries[s.blockEntryIdx-1].MaxId
+	s.CurrentBlockMaxIdVal = s.blockEntries[s.blockEntryIdx].MaxId
+	s.CurrentBlockImpactVal = s.computeCurrentBlockImpact()
 }
 
 func (s *SegmentBlockMax) Idf() float64 {
@@ -445,11 +445,11 @@ func (s *SegmentBlockMax) Idf() float64 {
 }
 
 func (s *SegmentBlockMax) IdPointer() uint64 {
-	return s.idPointer
+	return s.IdPointerVal
 }
 
 func (s *SegmentBlockMax) Exhausted() bool {
-	return s.exhausted
+	return s.ExhaustedVal
 }
 
 func (s *SegmentBlockMax) Count() int {
@@ -465,7 +465,7 @@ func (s *SegmentBlockMax) QueryTerm() string {
 }
 
 func (s *SegmentBlockMax) Score(averagePropLength float64, additionalExplanation bool) (uint64, float64, *terms.DocPointerWithScore) {
-	if s.exhausted {
+	if s.ExhaustedVal {
 		return 0, 0, nil
 	}
 
@@ -477,7 +477,7 @@ func (s *SegmentBlockMax) Score(averagePropLength float64, additionalExplanation
 	}
 
 	freq := float32(s.blockDataDecoded.Tfs[s.blockDataIdx])
-	propLength := s.propLengths[s.blockDataDecoded.DocIds[s.blockDataIdx]]
+	propLength := s.propLengths[s.IdPointerVal]
 	tf := freq / (freq + s.k1*(1-s.b+s.b*(float32(propLength)/s.averagePropLength)))
 	s.Metrics.DocCountScored++
 	if s.blockEntryIdx != s.Metrics.LastAddedBlock {
@@ -488,16 +488,16 @@ func (s *SegmentBlockMax) Score(averagePropLength float64, additionalExplanation
 
 	if additionalExplanation {
 		doc = &terms.DocPointerWithScore{
-			Id:         s.blockDataDecoded.DocIds[s.blockDataIdx],
+			Id:         s.IdPointerVal,
 			Frequency:  freq,
 			PropLength: float32(propLength),
 		}
 	}
-	return s.idPointer, float64(tf) * s.idf * float64(s.propertyBoost), doc
+	return s.IdPointerVal, float64(tf) * s.idf * float64(s.propertyBoost), doc
 }
 
 func (s *SegmentBlockMax) Advance() {
-	if s.exhausted {
+	if s.ExhaustedVal {
 		return
 	}
 
@@ -511,19 +511,19 @@ func (s *SegmentBlockMax) Advance() {
 		s.blockEntryIdx++
 		s.blockDataIdx = 0
 		s.decodeBlock()
-		if s.exhausted {
+		if s.ExhaustedVal {
 			return
 		}
 	}
 
 	s.advanceOnTombstoneOrFilter()
-	if !s.exhausted {
-		s.idPointer = s.blockDataDecoded.DocIds[s.blockDataIdx]
+	if !s.ExhaustedVal {
+		s.IdPointerVal = s.blockDataDecoded.DocIds[s.blockDataIdx]
 	}
 }
 
 func (s *SegmentBlockMax) computeCurrentBlockImpact() float32 {
-	if s.exhausted {
+	if s.ExhaustedVal {
 		return 0
 	}
 	freq := float32(s.blockEntries[s.blockEntryIdx].MaxImpactTf)
@@ -532,9 +532,9 @@ func (s *SegmentBlockMax) computeCurrentBlockImpact() float32 {
 }
 
 func (s *SegmentBlockMax) CurrentBlockImpact() float32 {
-	return s.currentBlockImpact
+	return s.CurrentBlockImpactVal
 }
 
 func (s *SegmentBlockMax) CurrentBlockMaxId() uint64 {
-	return s.currentBlockMaxId
+	return s.CurrentBlockMaxIdVal
 }
