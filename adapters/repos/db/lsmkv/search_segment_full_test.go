@@ -103,9 +103,9 @@ func TestSearchFull(t *testing.T) {
 		allResults := make([]*priorityqueue.Queue[[]*terms.DocPointerWithScore], 4)
 		for k := 0; k < 4; k++ {
 			start := time.Now()
-			termss := make([]terms.TermInterface, len(queryTerms))
-			termsss := make([]*SegmentBlockMax, len(queryTerms))
-			for j, key := range queryTerms {
+			termss := make([]terms.TermInterface, 0, len(queryTerms))
+			termsss := make([]*SegmentBlockMax, 0, len(queryTerms))
+			for _, key := range queryTerms {
 				if k == 0 || k%2 == 0 {
 					propLengths, err := segment.GetPropertyLengths()
 					if err != nil {
@@ -134,10 +134,10 @@ func TestSearchFull(t *testing.T) {
 					termResult.SetIdf(idfs[key])
 					termResult.SetPosPointer(0)
 					termResult.SetIdPointer(termResult.Data[0].Id)
-					termss[j] = termResult
+					termss = append(termss, termResult)
 				} else {
-					termss[j] = NewSegmentBlockMax(segment, []byte(key), ids[key], idfs[key], 1, nil, nil, averagePropLength, config)
-					termsss[j] = termss[j].(*SegmentBlockMax)
+					termss = append(termss, NewSegmentBlockMax(segment, []byte(key), ids[key], idfs[key], 1, nil, nil, averagePropLength, config))
+					termsss = append(termsss, NewSegmentBlockMax(segment, []byte(key), ids[key], idfs[key], 1, nil, nil, averagePropLength, config))
 				}
 			}
 			combinedTerms := &terms.Terms{
@@ -149,7 +149,7 @@ func TestSearchFull(t *testing.T) {
 			if k < 2 {
 				results = terms.DoWand(110, combinedTerms, averagePropLength, true)
 			} else {
-				results = DoBlockMaxWand(110, termsss, averagePropLength, true)
+				results = DoBlockMaxWand(110, termsss, averagePropLength, true, len(termsss))
 			}
 			allResults[k] = results
 			elapsed := time.Since(start)

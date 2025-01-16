@@ -243,6 +243,7 @@ func (s *SegmentBlockMax) advanceOnTombstoneOrFilter() {
 			if s.blockEntryIdx >= len(s.blockEntries)-1 {
 				s.IdPointerVal = math.MaxUint64
 				s.CurrentBlockImpactVal = 0
+				s.idf = 0
 				s.CurrentBlockMaxIdVal = math.MaxUint64
 				s.ExhaustedVal = true
 				return
@@ -301,6 +302,7 @@ func (s *SegmentBlockMax) decodeBlock() error {
 	if s.blockEntryIdx >= len(s.blockEntries) {
 		s.IdPointerVal = math.MaxUint64
 		s.CurrentBlockImpactVal = 0
+		s.idf = 0
 		s.CurrentBlockMaxIdVal = math.MaxUint64
 		s.decoded = true
 		s.ExhaustedVal = true
@@ -361,6 +363,7 @@ func (s *SegmentBlockMax) AdvanceAtLeast(docId uint64) {
 	if (s.blockEntryIdx == len(s.blockEntries)-1 && docId > s.blockEntries[s.blockEntryIdx].MaxId) || s.blockEntryIdx >= len(s.blockEntries) {
 		s.IdPointerVal = math.MaxUint64
 		s.CurrentBlockImpactVal = 0
+		s.idf = 0
 		s.CurrentBlockMaxIdVal = math.MaxUint64
 		s.ExhaustedVal = true
 		return
@@ -422,6 +425,7 @@ func (s *SegmentBlockMax) AdvanceAtLeastShallow(docId uint64) {
 		if s.blockEntryIdx >= len(s.blockEntries) {
 			s.IdPointerVal = math.MaxUint64
 			s.CurrentBlockImpactVal = 0
+			s.idf = 0
 			s.CurrentBlockMaxIdVal = math.MaxUint64
 			s.ExhaustedVal = true
 			return
@@ -431,6 +435,7 @@ func (s *SegmentBlockMax) AdvanceAtLeastShallow(docId uint64) {
 	if (s.blockEntryIdx == len(s.blockEntries)-1 && docId > s.blockEntries[s.blockEntryIdx].MaxId) || s.blockEntryIdx >= len(s.blockEntries) {
 		s.IdPointerVal = math.MaxUint64
 		s.CurrentBlockImpactVal = 0
+		s.idf = 0
 		s.CurrentBlockMaxIdVal = math.MaxUint64
 		s.ExhaustedVal = true
 		return
