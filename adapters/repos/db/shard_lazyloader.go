@@ -16,13 +16,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/weaviate/weaviate/entities/dto"
 
 	"github.com/go-openapi/strfmt"
 	"github.com/pkg/errors"
+	"github.com/sasha-s/go-deadlock"
 	"github.com/weaviate/weaviate/adapters/repos/db/indexcheckpoint"
 	"github.com/weaviate/weaviate/adapters/repos/db/indexcounter"
 	"github.com/weaviate/weaviate/adapters/repos/db/inverted"
@@ -53,7 +53,7 @@ type LazyLoadShard struct {
 	shardOpts  *deferredShardOpts
 	shard      *Shard
 	loaded     bool
-	mutex      sync.Mutex
+	mutex      deadlock.Mutex
 	memMonitor memwatch.AllocChecker
 }
 

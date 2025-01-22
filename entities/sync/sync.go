@@ -13,6 +13,8 @@ package sync
 
 import (
 	"sync"
+
+	"github.com/sasha-s/go-deadlock"
 )
 
 // KeyLocker it is a thread safe wrapper of sync.Map
@@ -37,17 +39,17 @@ func NewKeyLocker() *KeyLocker {
 //
 //	do not forget calling Unlock() after locking it.
 func (s *KeyLocker) Lock(ID string) {
-	iLock := &sync.Mutex{}
+	iLock := &deadlock.Mutex{}
 	iLocks, _ := s.m.LoadOrStore(ID, iLock)
 
-	iLock = iLocks.(*sync.Mutex)
+	iLock = iLocks.(*deadlock.Mutex)
 	iLock.Lock()
 }
 
 // Unlock it unlocks a specific item by it's ID
 func (s *KeyLocker) Unlock(ID string) {
 	iLocks, _ := s.m.Load(ID)
-	iLock := iLocks.(*sync.Mutex)
+	iLock := iLocks.(*deadlock.Mutex)
 	iLock.Unlock()
 }
 
