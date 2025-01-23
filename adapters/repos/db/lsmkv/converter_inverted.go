@@ -23,6 +23,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/weaviate/sroar"
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
+	"github.com/weaviate/weaviate/adapters/repos/db/inverted/terms"
 	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv/segmentindex"
 	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv/varenc"
 	"github.com/weaviate/weaviate/entities/additional"
@@ -79,6 +80,8 @@ type convertedInverted struct {
 	statsDeletedDocsNoText       uint64
 
 	documentsToUpdate *sroar.Bitmap
+	docIdEncoder      varenc.VarEncEncoder[uint64]
+	tfEncoder         varenc.VarEncEncoder[uint64]
 }
 
 func newConvertedInverted(w io.WriteSeeker,
@@ -177,6 +180,11 @@ func (c *convertedInverted) init() error {
 		DataFieldCount:        uint8(len(dataFields)),
 		DataFields:            dataFields,
 	}
+
+	c.docIdEncoder = varenc.GetVarEncEncoder64(c.invertedHeader.DataFields[0])
+	c.docIdEncoder.Init(terms.BLOCK_SIZE)
+	c.tfEncoder = varenc.GetVarEncEncoder64(c.invertedHeader.DataFields[1])
+	c.tfEncoder.Init(terms.BLOCK_SIZE)
 
 	return nil
 }
@@ -285,7 +293,7 @@ func (c *convertedInverted) writeIndividualNode(offset int, key []byte,
 		primaryKey:  keyCopy,
 		offset:      offset,
 		propLengths: propertyLengths,
-	}.KeyIndexAndWriteTo(c.bufw)
+	}.KeyIndexAndWriteTo(c.bufw, c.docIdEncoder, c.tfEncoder)
 }
 
 func (c *convertedInverted) writeIndices(keys []segmentindex.Key) error {
@@ -353,7 +361,7 @@ func (c *convertedInverted) cleanupValues(values []MapPair) (vals []MapPair, ski
 	propLength := uint32(0)
 	for i := 0; i < len(values); i++ {
 		docId := binary.BigEndian.Uint64(values[i].Key)
-		_, ok := c.propertyLengthsToWrite[docId]
+		_, docIdSeenBefore := c.propertyLengthsToWrite[docId]
 		obj := &storobj.Object{}
 		if values[i].Tombstone {
 			c.statsDeletedKeys++
@@ -385,7 +393,7 @@ func (c *convertedInverted) cleanupValues(values []MapPair) (vals []MapPair, ski
 				continue
 			}
 
-			// check if the object is still in the id bucket
+			// check if the object is still in the id bucket (this is probably a redundant check, as the object bucket is the source of truth) // TODO: remove id bucket check
 			allInternalIdBytes, err := c.idBucket.SetList([]byte(objs[0].ID().String()))
 			if err != nil {
 				continue
@@ -489,7 +497,7 @@ func (c *convertedInverted) cleanupValues(values []MapPair) (vals []MapPair, ski
 			// if docId in propertyLengthsToWrite
 			// then add propertyLengthsToWrite[docId] to propertyLengthsSum
 			c.statsWrittenKeys++
-			if !ok {
+			if !docIdSeenBefore {
 				c.statsWrittenDocs++
 				propLength = uint32(math.Float32frombits(binary.LittleEndian.Uint32(values[i].Value[4:])))
 				c.propertyLengthsToWrite[docId] = propLength
