@@ -55,6 +55,7 @@ func (s *Shard) initVectorIndex(ctx context.Context,
 
 	switch vectorIndexUserConfig.IndexType() {
 	case vectorindex.VectorIndexTypeHNSW:
+		fmt.Printf("  ==> Shard::initVectorIndex [%s] switch hnsw\n\n", targetVector)
 		hnswUserConfig, ok := vectorIndexUserConfig.(hnswent.UserConfig)
 		if !ok {
 			return nil, errors.Errorf("hnsw vector index: config is not hnsw.UserConfig: %T",
@@ -105,6 +106,7 @@ func (s *Shard) initVectorIndex(ctx context.Context,
 			vectorIndex = vi
 		}
 	case vectorindex.VectorIndexTypeFLAT:
+		fmt.Printf("  ==> Shard::initVectorIndex [%s] switch flat\n\n", targetVector)
 		flatUserConfig, ok := vectorIndexUserConfig.(flatent.UserConfig)
 		if !ok {
 			return nil, errors.Errorf("flat vector index: config is not flat.UserConfig: %T",
@@ -132,6 +134,7 @@ func (s *Shard) initVectorIndex(ctx context.Context,
 		}
 		vectorIndex = vi
 	case vectorindex.VectorIndexTypeDYNAMIC:
+		fmt.Printf("  ==> Shard::initVectorIndex [%s] switch dynamic\n\n", targetVector)
 		dynamicUserConfig, ok := vectorIndexUserConfig.(dynamicent.UserConfig)
 		if !ok {
 			return nil, errors.Errorf("dynamic vector index: config is not dynamic.UserConfig: %T",
@@ -171,6 +174,7 @@ func (s *Shard) initVectorIndex(ctx context.Context,
 		return nil, fmt.Errorf("Unknown vector index type: %q. Choose one from [\"%s\", \"%s\", \"%s\"]",
 			vectorIndexUserConfig.IndexType(), vectorindex.VectorIndexTypeHNSW, vectorindex.VectorIndexTypeFLAT, vectorindex.VectorIndexTypeDYNAMIC)
 	}
+	fmt.Printf("  ==> Shard::initVectorIndex [%s] before PostStartup\n\n", targetVector)
 	defer vectorIndex.PostStartup()
 	return vectorIndex, nil
 }
@@ -188,6 +192,7 @@ func hasTargetVectors(cfg schemaConfig.VectorIndexConfig, targetCfgs map[string]
 func (s *Shard) initTargetVectors(ctx context.Context) error {
 	s.vectorIndexes = make(map[string]VectorIndex)
 	for targetVector, vectorIndexConfig := range s.index.vectorIndexUserConfigs {
+		fmt.Printf("  ==> Shard::initTargetVectors before initVectorIndex [%s]\n\n", targetVector)
 		vectorIndex, err := s.initVectorIndex(ctx, targetVector, vectorIndexConfig)
 		if err != nil {
 			return fmt.Errorf("cannot create vector index for %q: %w", targetVector, err)

@@ -147,10 +147,14 @@ func New(cfg Config, uc ent.UserConfig, store *lsmkv.Store) (*dynamic, error) {
 
 	path := filepath.Join(cfg.RootPath, "index.db")
 
+	fmt.Printf("  ==> New dynamic index [%s] before bolt open [%s]\n\n", cfg.TargetVector, path)
 	db, err := bolt.Open(path, 0o600, nil)
+	fmt.Printf("  ==> New dynamic index [%s] after bolt open [%s]\n\n", cfg.TargetVector, path)
 	if err != nil {
 		return nil, errors.Wrapf(err, "open %q", path)
 	}
+
+	fmt.Printf("  ==> New dynamic index [%s] before bolt update\n\n", cfg.TargetVector)
 	err = db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(dynamicBucket)
 		return err
@@ -159,6 +163,7 @@ func New(cfg Config, uc ent.UserConfig, store *lsmkv.Store) (*dynamic, error) {
 		return nil, err
 	}
 
+	fmt.Printf("  ==> New dynamic index [%s] before bolt view\n\n", cfg.TargetVector)
 	upgraded := false
 	err = db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(dynamicBucket)
@@ -176,6 +181,8 @@ func New(cfg Config, uc ent.UserConfig, store *lsmkv.Store) (*dynamic, error) {
 
 	index.db = db
 	if upgraded {
+		fmt.Printf("  ==> New dynamic index [%s] upgraded hnsw\n\n", cfg.TargetVector)
+
 		index.upgraded.Store(true)
 		hnsw, err := hnsw.New(
 			hnsw.Config{
@@ -199,6 +206,8 @@ func New(cfg Config, uc ent.UserConfig, store *lsmkv.Store) (*dynamic, error) {
 		}
 		index.index = hnsw
 	} else {
+		fmt.Printf("  ==> New dynamic index [%s] !upgraded flat\n\n", cfg.TargetVector)
+
 		flat, err := flat.New(flatConfig, uc.FlatUC, store)
 		if err != nil {
 			return nil, err

@@ -100,8 +100,11 @@ func (l *LazyLoadShard) mustLoadCtx(ctx context.Context) {
 }
 
 func (l *LazyLoadShard) Load(ctx context.Context) error {
+	fmt.Printf("  ==> LazyLoadShard::Load before lock\n\n")
 	l.mutex.Lock()
+	fmt.Printf("  ==> LazyLoadShard::Load after lock\n\n")
 	defer l.mutex.Unlock()
+	defer fmt.Printf("  ==> LazyLoadShard::Load unlocking\n\n")
 
 	if l.loaded {
 		return nil
@@ -116,8 +119,10 @@ func (l *LazyLoadShard) Load(ctx context.Context) error {
 	} else {
 		l.shardOpts.promMetrics.StartLoadingShard(l.shardOpts.class.Class)
 	}
+	fmt.Printf("  ==> LazyLoadShard::Load before NewShard\n\n")
 	shard, err := NewShard(ctx, l.shardOpts.promMetrics, l.shardOpts.name, l.shardOpts.index,
 		l.shardOpts.class, l.shardOpts.jobQueueCh, l.shardOpts.scheduler, l.shardOpts.indexCheckpoints)
+	fmt.Printf("  ==> LazyLoadShard::Load after NewShard\n\n")
 	if err != nil {
 		msg := fmt.Sprintf("Unable to load shard %s: %v", l.shardOpts.name, err)
 		l.shardOpts.index.logger.WithField("error", "shard_load").WithError(err).Error(msg)

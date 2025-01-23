@@ -113,28 +113,36 @@ func NewShard(ctx context.Context, promMetrics *monitoring.PrometheusMetrics,
 	mux := sync.Mutex{}
 	s.objectPropagationNeededCond = sync.NewCond(&mux)
 
+	fmt.Printf("  ==> NewShard before initNonVector\n\n")
+
 	if err := s.initNonVector(ctx, class); err != nil {
 		return nil, errors.Wrapf(err, "init shard %q", s.ID())
 	}
 
 	if s.hasTargetVectors() {
+		fmt.Printf("  ==> NewShard before initTargetVectors\n\n")
 		if err := s.initTargetVectors(ctx); err != nil {
 			return nil, err
 		}
+		fmt.Printf("  ==> NewShard before initTargetQueues\n\n")
 		if err := s.initTargetQueues(); err != nil {
 			return nil, err
 		}
 	} else {
+		fmt.Printf("  ==> NewShard before initLegacyVector\n\n")
 		if err := s.initLegacyVector(ctx); err != nil {
 			return nil, err
 		}
+		fmt.Printf("  ==> NewShard before initLegacyQueue\n\n")
 		if err := s.initLegacyQueue(); err != nil {
 			return nil, err
 		}
 	}
 
+	fmt.Printf("  ==> NewShard before initDimensionTracking\n\n")
 	s.initDimensionTracking()
 
+	fmt.Printf("  ==> NewShard before asyncEnabled\n\n")
 	if asyncEnabled() {
 		f := func() {
 			// convert in-memory queues to on-disk queues in the background.
@@ -155,6 +163,7 @@ func NewShard(ctx context.Context, promMetrics *monitoring.PrometheusMetrics,
 		}
 		enterrors.GoWrapper(f, s.index.logger)
 	}
+	fmt.Printf("  ==> NewShard before NotifyReady\n\n")
 	s.NotifyReady()
 
 	if exists {
