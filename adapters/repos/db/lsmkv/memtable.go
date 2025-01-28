@@ -297,9 +297,9 @@ func (m *Memtable) getMap(key []byte) ([]MapPair, error) {
 	start := time.Now()
 	defer m.metrics.getMap(start.UnixNano())
 
-	if m.strategy != StrategyMapCollection {
-		return nil, errors.Errorf("getCollection only possible with strategy %q",
-			StrategyMapCollection)
+	if m.strategy != StrategyMapCollection && m.strategy != StrategyInverted {
+		return nil, errors.Errorf("getCollection only possible with strategies %q and %q",
+			StrategyMapCollection, StrategyInverted)
 	}
 
 	m.RLock()
