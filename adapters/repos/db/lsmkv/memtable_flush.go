@@ -54,7 +54,7 @@ func (m *Memtable) flush() error {
 	var keys []segmentindex.Key
 	skipIndices := false
 
-	switch m.flushStrategy {
+	switch m.strategy {
 	case StrategyReplace:
 		if keys, err = m.flushDataReplace(segmentFile); err != nil {
 			return err
@@ -80,10 +80,12 @@ func (m *Memtable) flush() error {
 		if keys, err = m.flushDataMap(segmentFile); err != nil {
 			return err
 		}
+
 	case StrategyInverted:
 		if keys, _, err = m.flushDataInverted(bufw, f); err != nil {
 			return err
 		}
+
 	default:
 		return fmt.Errorf("cannot flush strategy %s", m.strategy)
 	}
@@ -98,7 +100,7 @@ func (m *Memtable) flush() error {
 		// TODO: Currently no checksum validation support for StrategyInverted.
 		//       This condition can be removed once support is added, and for
 		//       all strategies we can simply `segmentFile.WriteIndexes(indexes)`
-		if m.flushStrategy == StrategyInverted {
+		if m.strategy == StrategyInverted {
 			if _, err := indexes.WriteTo(bufw); err != nil {
 				return err
 			}
@@ -112,7 +114,7 @@ func (m *Memtable) flush() error {
 	// TODO: Currently no checksum validation support for StrategyInverted.
 	//       This condition can be removed once support is added, and for
 	//       all strategies we can simply `segmentFile.WriteChecksum()`
-	if m.flushStrategy != StrategyInverted {
+	if m.strategy != StrategyInverted {
 		if _, err := segmentFile.WriteChecksum(); err != nil {
 			return err
 		}

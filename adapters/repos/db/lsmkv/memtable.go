@@ -38,7 +38,6 @@ type Memtable struct {
 	size               uint64
 	path               string
 	strategy           string
-	flushStrategy      string
 	secondaryIndices   uint16
 	secondaryToPrimary []map[string][]byte
 	// stores time memtable got dirty to determine when flush is needed
@@ -55,10 +54,6 @@ func newMemtable(path string, strategy string, secondaryIndices uint16,
 	cl *commitLogger, metrics *Metrics, logger logrus.FieldLogger,
 	enableChecksumValidation bool,
 ) (*Memtable, error) {
-	flushStrategy := strategy
-	if strategy == StrategyInverted {
-		strategy = StrategyMapCollection
-	}
 	m := &Memtable{
 		key:                      &binarySearchTree{},
 		keyMulti:                 &binarySearchTreeMulti{},
@@ -69,7 +64,6 @@ func newMemtable(path string, strategy string, secondaryIndices uint16,
 		commitlog:                cl,
 		path:                     path,
 		strategy:                 strategy,
-		flushStrategy:            flushStrategy,
 		secondaryIndices:         secondaryIndices,
 		dirtyAt:                  time.Time{},
 		createdAt:                time.Now(),
@@ -86,7 +80,7 @@ func newMemtable(path string, strategy string, secondaryIndices uint16,
 
 	m.metrics.size(m.size)
 
-	if m.strategy == StrategyMapCollection {
+	if IsExpectedStrategy(m.strategy, StrategyMapCollection, StrategyInverted) {
 		m.tombstones = sroar.NewBitmap()
 	}
 
