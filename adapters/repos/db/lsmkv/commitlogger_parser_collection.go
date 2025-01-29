@@ -83,9 +83,11 @@ func (p *commitloggerParser) parseCollectionNode(reader io.Reader) error {
 		return err
 	}
 
-	if p.strategy == StrategyMapCollection {
+	// Commit log nodes are the same for MapCollection and Inverted strategies
+	if p.strategy == StrategyMapCollection || p.strategy == StrategyInverted {
 		return p.parseMapNode(n)
 	}
+	// TODO amourao: check if this is needed for StrategyInverted
 
 	return p.memtable.append(n.primaryKey, n.values)
 }

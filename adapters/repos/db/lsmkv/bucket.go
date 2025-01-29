@@ -208,6 +208,8 @@ func (*Bucket) NewBucket(ctx context.Context, dir, rootDir string, logger logrus
 		return nil, fmt.Errorf("init disk segments: %w", err)
 	}
 
+	// TODO amourao: proper initialization of inverted
+
 	b.desiredStrategy = b.strategy
 	// Actual strategy is stored in segment files. In case it is SetCollection,
 	// while new implementation uses bitmaps and supposed to be RoaringSet,
