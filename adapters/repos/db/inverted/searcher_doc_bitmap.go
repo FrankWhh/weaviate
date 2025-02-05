@@ -42,6 +42,9 @@ func (s *Searcher) docBitmap(ctx context.Context, b *lsmkv.Bucket, limit int,
 		}
 
 		helpers.AnnotateSlowQueryLogAppend(ctx, "build_allow_list_doc_bitmap", vals)
+
+		fmt.Printf("  ==> Searcher::docBitmap defer docIds [%+v] release [%+v]\n\n",
+			bm.docIDs, bm.release)
 	}()
 
 	// geo props cannot be served by the inverted index and they require an
@@ -78,11 +81,14 @@ func (s *Searcher) docBitmapInvertedRoaringSet(ctx context.Context, b *lsmkv.Buc
 	out := newUninitializedDocBitmap()
 	isEmpty := true
 	var readFn ReadFn = func(k []byte, docIDs *sroar.Bitmap, release func()) (bool, error) {
+		fmt.Printf("  ==> Searcher::docBitmapInvertedRoaringSet/readFn release == nil [%v]\n", release == nil)
 		if isEmpty {
+			fmt.Printf("  ==> Searcher::docBitmapInvertedRoaringSet/readFn isEmpty - setting out\n\n")
 			out.docIDs = docIDs
 			out.release = release
 			isEmpty = false
 		} else {
+			fmt.Printf("  ==> Searcher::docBitmapInvertedRoaringSet/readFn !isEmpty - calling\n\n")
 			out.docIDs.OrConc(docIDs, concurrency.SROAR_MERGE)
 			release()
 		}
@@ -104,8 +110,11 @@ func (s *Searcher) docBitmapInvertedRoaringSet(ctx context.Context, b *lsmkv.Buc
 	}
 
 	if isEmpty {
+		fmt.Printf("  ==> Searcher::docBitmapInvertedRoaringSet isEmpty - return newDocBitmap\n\n")
 		return newDocBitmap(), nil
 	}
+	fmt.Printf("  ==> Searcher::docBitmapInvertedRoaringSet !isEmpty - return out docIds [%+v] release [%+v]\n\n",
+		out.docIDs, out.release)
 	return out, nil
 }
 
@@ -136,11 +145,14 @@ func (s *Searcher) docBitmapInvertedSet(ctx context.Context, b *lsmkv.Bucket,
 	out := newUninitializedDocBitmap()
 	isEmpty := true
 	var readFn ReadFn = func(k []byte, ids *sroar.Bitmap, release func()) (bool, error) {
+		fmt.Printf("  ==> Searcher::docBitmapInvertedSet/readFn release == nil [%v]\n", release == nil)
 		if isEmpty {
+			fmt.Printf("  ==> Searcher::docBitmapInvertedSet/readFn isEmpty - setting out\n\n")
 			out.docIDs = ids
 			out.release = release
 			isEmpty = false
 		} else {
+			fmt.Printf("  ==> Searcher::docBitmapInvertedSet/readFn !isEmpty - calling\n\n")
 			out.docIDs.OrConc(ids, concurrency.SROAR_MERGE)
 			release()
 		}
@@ -162,8 +174,11 @@ func (s *Searcher) docBitmapInvertedSet(ctx context.Context, b *lsmkv.Bucket,
 	}
 
 	if isEmpty {
+		fmt.Printf("  ==> Searcher::docBitmapInvertedSet isEmpty - return newDocBitmap\n\n")
 		return newDocBitmap(), nil
 	}
+	fmt.Printf("  ==> Searcher::docBitmapInvertedSet !isEmpty - return out docIds [%+v] release [%+v]\n\n",
+		out.docIDs, out.release)
 	return out, nil
 }
 
@@ -173,11 +188,14 @@ func (s *Searcher) docBitmapInvertedMap(ctx context.Context, b *lsmkv.Bucket,
 	out := newUninitializedDocBitmap()
 	isEmpty := true
 	var readFn ReadFn = func(k []byte, ids *sroar.Bitmap, release func()) (bool, error) {
+		fmt.Printf("  ==> Searcher::docBitmapInvertedMap/readFn release == nil [%v]\n", release == nil)
 		if isEmpty {
+			fmt.Printf("  ==> Searcher::docBitmapInvertedMap/readFn isEmpty - setting out\n\n")
 			out.docIDs = ids
 			out.release = release
 			isEmpty = false
 		} else {
+			fmt.Printf("  ==> Searcher::docBitmapInvertedMap/readFn !isEmpty - calling\n\n")
 			out.docIDs.OrConc(ids, concurrency.SROAR_MERGE)
 			release()
 		}
@@ -199,8 +217,11 @@ func (s *Searcher) docBitmapInvertedMap(ctx context.Context, b *lsmkv.Bucket,
 	}
 
 	if isEmpty {
+		fmt.Printf("  ==> Searcher::docBitmapInvertedMap isEmpty - return newDocBitmap\n\n")
 		return newDocBitmap(), nil
 	}
+	fmt.Printf("  ==> Searcher::docBitmapInvertedMap !isEmpty - return out docIds [%+v] release [%+v]\n\n",
+		out.docIDs, out.release)
 	return out, nil
 }
 

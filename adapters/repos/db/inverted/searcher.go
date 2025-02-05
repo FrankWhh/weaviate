@@ -215,6 +215,7 @@ func (s *Searcher) docIDs(ctx context.Context, filter *filters.LocalFilter,
 	if err != nil {
 		return nil, fmt.Errorf("merge doc ids by operator: %w", err)
 	}
+	fmt.Printf("  ==> Searcher::docIDs after mergeDocIds docIds [%+v] release [%+v]\n\n", dbm.docIDs, dbm.release)
 	helpers.AnnotateSlowQueryLog(ctx, "build_allow_list_merge_took", time.Since(beforeMerge))
 
 	return helpers.NewAllowListCloseableFromBitmap(dbm.docIDs, dbm.release), nil

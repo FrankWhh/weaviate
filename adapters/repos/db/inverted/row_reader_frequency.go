@@ -77,6 +77,7 @@ func (rr *RowReaderFrequency) equal(ctx context.Context, readFn ReadFn) error {
 		return err
 	}
 
+	fmt.Printf("  ==> RowReaderFrequency::equal setting noopRelease == nil [%v]\n\n", noopRelease == nil)
 	_, err = readFn(rr.value, rr.transformToBitmap(v), noopRelease)
 	return err
 }
@@ -90,6 +91,7 @@ func (rr *RowReaderFrequency) notEqual(ctx context.Context, readFn ReadFn) error
 	// Invert the Equal results for an efficient NotEqual
 	inverted, release := rr.bitmapFactory.GetBitmap()
 	inverted.AndNotConc(rr.transformToBitmap(v), concurrency.SROAR_MERGE)
+	fmt.Printf("  ==> RowReaderFrequency::notEqual setting release == nil [%v]\n\n", release == nil)
 	_, err = readFn(rr.value, inverted, release)
 	return err
 }

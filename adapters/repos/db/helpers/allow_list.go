@@ -12,6 +12,8 @@
 package helpers
 
 import (
+	"fmt"
+
 	"github.com/weaviate/sroar"
 	"github.com/weaviate/weaviate/adapters/repos/db/roaringset"
 )
@@ -50,6 +52,8 @@ func NewAllowListFromBitmap(bm *sroar.Bitmap) AllowList {
 }
 
 func NewAllowListCloseableFromBitmap(bm *sroar.Bitmap, release func()) AllowList {
+	fmt.Printf("  ==> NewAllowListCloseableFromBitmap docIds [%+v] release [%+v]\n\n",
+		bm, release)
 	return &BitmapAllowList{Bm: bm, release: release}
 }
 
@@ -66,6 +70,10 @@ type BitmapAllowList struct {
 }
 
 func (al *BitmapAllowList) Close() {
+	fmt.Printf("  ==> BitmapAllowList::Close al == nil [%v]\n\n", al == nil)
+	if al != nil {
+		fmt.Printf("  ==> BitmapAllowList::Close release == nil [%v]\n\n", al.release == nil)
+	}
 	al.release()
 }
 

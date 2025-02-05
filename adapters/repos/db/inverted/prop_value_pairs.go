@@ -123,6 +123,10 @@ func (pv *propValuePair) fetchDocIDs(ctx context.Context, s *Searcher, limit int
 
 func (pv *propValuePair) mergeDocIDs() (*docBitmap, error) {
 	if pv.operator.OnValue() {
+		fmt.Printf("  ==> propValuePair::mergeDocIDs OnValue docIds [%+v] release [%+v]\n",
+			pv.docIDs.docIDs, pv.docIDs.release)
+		// fmt.Printf("  ==> propValuePair::mergeDocIDs OnValue& docIds [%+v] release [%+v]\n\n",
+		// 	&pv.docIDs.docIDs, &pv.docIDs.release)
 		return &pv.docIDs, nil
 	}
 
@@ -138,6 +142,8 @@ func (pv *propValuePair) mergeDocIDs() (*docBitmap, error) {
 	case 0:
 		return nil, fmt.Errorf("no children for operator: %s", pv.operator.Name())
 	case 1:
+		fmt.Printf("  ==> propValuePair::mergeDocIDs switch/case1 docIds [%+v] release [%+v]\n\n",
+			&pv.children[0].docIDs.docIDs, &pv.children[0].docIDs.release)
 		return &pv.children[0].docIDs, nil
 	}
 
@@ -148,6 +154,8 @@ func (pv *propValuePair) mergeDocIDs() (*docBitmap, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "retrieve doc bitmap of child %d", i)
 		}
+		fmt.Printf("  ==> propValuePair::mergeDocIDs forloop/merging [%d] docIds [%+v] release [%+v]\n\n",
+			i, dbms[i].docIDs, dbms[i].release)
 	}
 
 	var mergeFn func(*sroar.Bitmap, int) *sroar.Bitmap
@@ -168,9 +176,13 @@ func (pv *propValuePair) mergeDocIDs() (*docBitmap, error) {
 	}
 
 	for i := 1; i < len(dbms); i++ {
+		fmt.Printf("  ==> propValuePair::mergeDocIDs forloop/sraor [%d] docIds [%+v] release [%+v]\n\n",
+			i, dbms[i].docIDs, dbms[i].release)
 		mergeFn(dbms[i].docIDs, concurrency.SROAR_MERGE)
 		dbms[i].release()
 	}
+	fmt.Printf("  ==> propValuePair::mergeDocIDs returning docIds [%+v] release [%+v]\n\n",
+		dbms[0].docIDs, dbms[0].release)
 	return dbms[0], nil
 }
 

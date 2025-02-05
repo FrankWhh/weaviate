@@ -345,8 +345,12 @@ func (s *Shard) ObjectSearch(ctx context.Context, limit int, filters *filters.Lo
 				return nil, nil, err
 			}
 
+			fmt.Printf("  ==> Shard::ObjectSearch search objs [%+v] objs == nil [%v]\n\n", objs, objs == nil)
 			filterDocIds = objs
-			defer objs.Close()
+			defer func() {
+				fmt.Printf("  ==> Shard::ObjectSearch before close objs [%+v] objs == nil [%v]\n\n", objs, objs == nil)
+				objs.Close()
+			}()
 		}
 
 		className := s.index.Config.ClassName

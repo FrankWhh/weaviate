@@ -11,6 +11,8 @@
 
 package helpers
 
+import "fmt"
+
 type wrappedAllowList struct {
 	wAllowList AllowList
 	allowList  AllowList
@@ -23,6 +25,10 @@ func newWrappedAllowList(al AllowList) AllowList {
 }
 
 func (al *wrappedAllowList) Close() {
+	fmt.Printf("  ==> wrappedAllowList::Close al == nil [%v]\n\n", al == nil)
+	if al != nil {
+		fmt.Printf("  ==> wrappedAllowList::Close al.wAllowList == nil [%v]\n\n", al.wAllowList == nil)
+	}
 	al.wAllowList.Close()
 }
 

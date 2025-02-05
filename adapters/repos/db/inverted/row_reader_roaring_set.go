@@ -103,6 +103,7 @@ func (rr *RowReaderRoaringSet) equal(ctx context.Context,
 		return err
 	}
 
+	fmt.Printf("  ==> RowReaderRoaringSet::equal setting noopRelease == nil [%v]\n\n", noopRelease == nil)
 	_, err = readFn(rr.value, v, noopRelease)
 	return err
 }
@@ -117,6 +118,7 @@ func (rr *RowReaderRoaringSet) notEqual(ctx context.Context,
 
 	inverted, release := rr.bitmapFactory.GetBitmap()
 	inverted.AndNotConc(v, concurrency.SROAR_MERGE)
+	fmt.Printf("  ==> RowReaderRoaringSet::notEqual setting release == nil [%v]\n\n", release == nil)
 	_, err = readFn(rr.value, inverted, release)
 	return err
 }
