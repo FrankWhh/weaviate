@@ -810,6 +810,126 @@ func (m *Migrator) InvertedReindex(ctx context.Context, taskNamesWithArgs map[st
 	return errs.ToError()
 }
 
+func (m *Migrator) Reindexer(tasksNames []string, args map[string]any) (*Reindexer, error) {
+	reindexer := NewReindexer(m.db.indices, m.logger)
+	for _, name := range tasksNames {
+		if err := reindexer.AddTask(name, args[name]); err != nil {
+			return nil, err
+		}
+	}
+	return reindexer, nil
+}
+
+type Reindexer struct {
+	indexes map[string]*Index
+	logger  logrus.FieldLogger
+
+	names []string
+	tasks map[string]ShardInvertedReindexTask3
+	skip  map[string]struct{}
+}
+
+func NewReindexer(indexes map[string]*Index, logger logrus.FieldLogger) *Reindexer {
+	return &Reindexer{
+		indexes: indexes,
+		logger:  logger,
+		tasks:   map[string]ShardInvertedReindexTask3{},
+		skip:    map[string]struct{}{},
+	}
+}
+
+func (r *Reindexer) AddTask(name string, args any) error {
+	if _, ok := r.tasks[name]; ok {
+		return fmt.Errorf("task %q already added", name)
+	}
+	switch name {
+	case "ShardInvertedReindexTask_MapToBlockmax":
+		// no args supported for task
+		r.tasks[name] = NewShardInvertedReindexTaskMapToBlockmax(r.logger)
+		r.names = append(r.names, name)
+	default:
+		return fmt.Errorf("unknown/undefined task %q", name)
+	}
+	return nil
+}
+
+func (r *Reindexer) HasOnBefore() bool {
+	for _, task := range r.tasks {
+		if task.HasOnBefore() {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Reindexer) OnBefore(ctx context.Context) error {
+	var errs errorcompounder.ErrorCompounder
+
+	for _, name := range r.names {
+		task := r.tasks[name]
+		if !task.HasOnBefore() {
+			continue
+		}
+
+		if err := task.OnBefore(ctx); err != nil {
+			errs.Add(err)
+			r.skip[name] = struct{}{}
+			continue
+		}
+
+		for _, index := range r.indexes {
+			err := index.ForEachShardConcurrently(func(_ string, shard ShardLike) error {
+				return task.OnBeforeShard(ctx, shard)
+			})
+			if err != nil {
+				errs.Add(err)
+				r.skip[name] = struct{}{}
+			}
+		}
+	}
+
+	return errs.ToError()
+}
+
+func (r *Reindexer) Reindex(ctx context.Context) error {
+	var errs errorcompounder.ErrorCompounder
+
+	for _, name := range r.names {
+		if _, ok := r.skip[name]; ok {
+			r.logger.WithField("action", "reindexing").
+				WithField("taskName", name).
+				Info("skipping due to previous error")
+			continue
+		}
+
+		task := r.tasks[name]
+		for _, index := range r.indexes {
+			err := index.ForEachShardConcurrently(func(_ string, shard ShardLike) error {
+				return task.Reindex(ctx, shard)
+			})
+			errs.Add(err)
+		}
+	}
+
+	return errs.ToError()
+}
+
+type ShardInvertedReindexTask3 interface {
+	GetPropertiesToReindex(ctx context.Context, shard ShardLike) ([]ReindexableProperty, error)
+	// BeforeReindex(ctx context.Context, shard ShardLike)
+	HasOnBefore() bool
+	OnBefore(ctx context.Context) error
+	OnBeforeShard(ctx context.Context, shard ShardLike) error
+
+	Reindex(ctx context.Context, shard ShardLike) error
+
+	// right now only OnResume is needed, but in the future more
+	// callbacks could be added
+	// (like OnPrePauseStore, OnPostPauseStore, OnPreResumeStore, etc)
+	// OnPostResumeStore(ctx context.Context, shard ShardLike) error
+	// ObjectsIterator(shard ShardLike) objectsIterator
+}
+
 func (m *Migrator) doInvertedReindex(ctx context.Context, taskNamesWithArgs map[string]any) error {
 	tasks := map[string]ShardInvertedReindexTask{}
 	for name, args := range taskNamesWithArgs {

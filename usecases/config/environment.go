@@ -118,6 +118,10 @@ func FromEnv(config *Config) error {
 		config.ReindexSetToRoaringsetAtStartup = true
 	}
 
+	if entcfg.Enabled(os.Getenv("REINDEX_MAP_TO_BLOCKMAX_AT_STARTUP")) {
+		config.ReindexMapToBlockmaxAtStartup = true
+	}
+
 	if entcfg.Enabled(os.Getenv("INDEX_MISSING_TEXT_FILTERABLE_AT_STARTUP")) {
 		config.IndexMissingTextFilterableAtStartup = true
 	}

@@ -598,6 +598,84 @@ func MakeAppState(ctx context.Context, options *swag.CommandLineOptionsGroup) *s
 		reindexTaskNamesWithArgs["ShardInvertedReindexTask_SpecifiedIndex"] = appState.ServerConfig.Config.ReindexIndexesAtStartup
 	}
 
+	reindexTasksNames := []string{}
+	reindexTasksArgs := map[string]any{}
+	reindexFinished2 := make(chan error, 1)
+	if appState.ServerConfig.Config.ReindexMapToBlockmaxAtStartup {
+		reindexTasksNames = append(reindexTasksNames, "ShardInvertedReindexTask_MapToBlockmax")
+	}
+
+	if len(reindexTasksNames) > 0 {
+		waitForMetaStore := func() error {
+			// wait until meta store is ready, as reindex tasks need schema
+			<-storeReadyCtx.Done()
+			if err := context.Cause(storeReadyCtx); !errors.Is(err, metaStoreReadyErr) {
+				return err
+			}
+			return nil
+		}
+		logger := func() *logrus.Entry {
+			return appState.Logger.WithField("action", "reindexing")
+		}
+
+		reindexer, err := migrator.Reindexer(reindexTasksNames, reindexTasksArgs)
+		if err != nil {
+			logger().WithError(err).Fatal("creating reindexer")
+			os.Exit(1)
+		}
+
+		if reindexer.HasOnBefore() {
+			if err := waitForMetaStore(); err != nil {
+				logger().WithError(err).Error("meta store not available")
+				reindexFinished2 <- err
+			} else {
+				logger().Info("starting on before")
+				if err := reindexer.OnBefore(reindexCtx); err != nil {
+					logger().WithError(err).Error("on before failed")
+				} else {
+					logger().Info("finished on before")
+				}
+
+				// continue despite error
+				enterrors.GoWrapper(func() {
+					logger().Info("starting reindexing")
+					err := reindexer.Reindex(ctx)
+					reindexFinished2 <- err
+					if err != nil {
+						logger().WithError(err).Error("reindexing failed")
+					} else {
+						logger().Info("finished reindexing")
+					}
+				}, appState.Logger)
+			}
+		} else {
+			enterrors.GoWrapper(func() {
+				if err := waitForMetaStore(); err != nil {
+					logger().WithError(err).Error("meta store not available")
+					reindexFinished2 <- err
+				} else {
+					logger().Info("starting reindexing")
+					err := reindexer.Reindex(ctx)
+					reindexFinished2 <- err
+					if err != nil {
+						logger().WithError(err).Error("reindexing failed")
+					} else {
+						logger().Info("finished reindexing")
+					}
+				}
+			}, appState.Logger)
+		}
+
+		// is sync processing needed
+		// if so:
+		// - wait for store to be ready
+		// - do the sync processing
+		// - run goroutine with async processing
+		// if not
+		// - run goroutine with async processing
+
+	}
+
 	if len(reindexTaskNamesWithArgs) > 0 {
 		// start reindexing inverted indexes (if requested by user) in the background
 		// allowing db to complete api configuration and start handling requests
