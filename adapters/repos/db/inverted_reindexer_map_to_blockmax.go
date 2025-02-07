@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -37,22 +39,38 @@ type ShardInvertedReindexTask2 interface {
 }
 
 const (
-	filenameStarted  = "started.mig"
-	filenameFinished = "finished.mig"
+	filenameStarted    = "started.mig"
+	filenameInProgress = "inProgress.mig"
+	filenameFinished   = "finished.mig"
 )
+
+var (
+	filenameInProgressGlob = ""
+)
+
+func init() {
+	globDigit := "[0-9]"
+	builder := new(strings.Builder)
+	builder.WriteString(filenameInProgress)
+	builder.WriteString(".")
+	for i := 0; i < 9; i++ {
+		builder.WriteString(globDigit)
+	}
+	filenameInProgressGlob = builder.String()
+}
 
 type ShardInvertedReindexTask_MapToBlockmax struct {
 	logger logrus.FieldLogger
 
-	propsByCollectionShard   map[string]map[string][]ReindexableProperty
-	lsmDirsByCollectionShard map[string]map[string]string
+	propsByCollectionShard    map[string]map[string][]ReindexableProperty
+	lsmPathsByCollectionShard map[string]map[string]string
 }
 
 func NewShardInvertedReindexTaskMapToBlockmax(logger logrus.FieldLogger) *ShardInvertedReindexTask_MapToBlockmax {
 	return &ShardInvertedReindexTask_MapToBlockmax{
-		logger:                   logger,
-		propsByCollectionShard:   map[string]map[string][]ReindexableProperty{},
-		lsmDirsByCollectionShard: map[string]map[string]string{},
+		logger:                    logger,
+		propsByCollectionShard:    map[string]map[string][]ReindexableProperty{},
+		lsmPathsByCollectionShard: map[string]map[string]string{},
 	}
 }
 
@@ -82,15 +100,15 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) OnBeforeShard(ctx context.Conte
 	if _, ok := t.propsByCollectionShard[collectionName]; !ok {
 		t.propsByCollectionShard[collectionName] = map[string][]ReindexableProperty{}
 	}
-	if _, ok := t.lsmDirsByCollectionShard[collectionName]; !ok {
-		t.lsmDirsByCollectionShard[collectionName] = map[string]string{}
+	if _, ok := t.lsmPathsByCollectionShard[collectionName]; !ok {
+		t.lsmPathsByCollectionShard[collectionName] = map[string]string{}
 	}
 
 	objectsBucket := shard.Store().Bucket(helpers.ObjectsBucketLSM)
 	lsmDir := filepath.Dir(objectsBucket.GetDir())
 
 	t.propsByCollectionShard[collectionName][shard.Name()] = props
-	t.lsmDirsByCollectionShard[collectionName][shard.Name()] = lsmDir
+	t.lsmPathsByCollectionShard[collectionName][shard.Name()] = lsmDir
 
 	if err := os.MkdirAll(t.migrationDir(lsmDir), 0o777); err != nil {
 		return err
@@ -102,7 +120,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) OnBeforeShard(ctx context.Conte
 func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, shard ShardLike) error {
 	fmt.Printf("  ==> ShardInvertedReindexTask_MapToBlockmax::Reindex [%s]\n", shard.Name())
 	fmt.Printf("  ==> all props [%+v]\n\n", t.propsByCollectionShard)
-	fmt.Printf("  ==> all lsm dirs [%+v]\n\n", t.lsmDirsByCollectionShard)
+	fmt.Printf("  ==> all lsm dirs [%+v]\n\n", t.lsmPathsByCollectionShard)
 
 	collectionName := shard.Index().Config.ClassName.String()
 
@@ -132,6 +150,25 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		t.markStarted(shard)
 	}
 
+	last, err := t.lastInProgress(shard)
+
+	fmt.Printf("  ==> last in progress [%s] err [%s]\n\n", last, err)
+	checkpoint := 123
+
+	if !t.isInProgress(shard) {
+		fmt.Printf("  ==> not in progress\n\n")
+
+		// for i := 0; i < 10; i++ {
+		t.markInProgress(shard, "something in the way", checkpoint)
+		// 	checkpoint++
+		// }
+
+	} else {
+		lastProcessed, checkpoint, err := t.readProgress(shard)
+
+		fmt.Printf("  ==> last processed [%s] checkpoint [%d] err [%s]\n\n", lastProcessed, checkpoint, err)
+	}
+
 	fmt.Printf("  ==> bucketsByPropName [%+v]\n\n", bucketsByPropName)
 
 	return nil
@@ -141,18 +178,19 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) reindexBucketName(propName stri
 	return helpers.BucketSearchableFromPropNameLSM(propName) + "__blockmax_reindex"
 }
 
-func (t *ShardInvertedReindexTask_MapToBlockmax) migrationDir(lsmDir string) string {
-	return filepath.Join(lsmDir, ".migrations", "searchable_map_to_blockmax")
+// TODO al:blockmax rename/remove
+func (t *ShardInvertedReindexTask_MapToBlockmax) migrationDir(lsmPath string) string {
+	return filepath.Join(lsmPath, ".migrations", "searchable_map_to_blockmax")
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) migrationPath(shard ShardLike) string {
+	collectionName := shard.Index().Config.ClassName.String()
+	lsmPath := t.lsmPathsByCollectionShard[collectionName][shard.Name()]
+	return t.migrationDir(lsmPath)
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) filepath(shard ShardLike, filename string) string {
-	collectionName := shard.Index().Config.ClassName.String()
-	lsmDir := t.lsmDirsByCollectionShard[collectionName][shard.Name()]
-	return filepath.Join(t.migrationDir(lsmDir), filename)
-}
-
-func (t *ShardInvertedReindexTask_MapToBlockmax) isStarted(shard ShardLike) bool {
-	return t.fileExists(shard, filenameStarted)
+	return filepath.Join(t.migrationPath(shard), filename)
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) fileExists(shard ShardLike, filename string) bool {
@@ -165,25 +203,85 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) fileExists(shard ShardLike, fil
 	return false
 }
 
+func (t *ShardInvertedReindexTask_MapToBlockmax) isStarted(shard ShardLike) bool {
+	return t.fileExists(shard, filenameStarted)
+}
+
 func (t *ShardInvertedReindexTask_MapToBlockmax) markStarted(shard ShardLike) error {
 	return t.createFile(shard, filenameStarted, time.Now().String())
 }
 
+func (t *ShardInvertedReindexTask_MapToBlockmax) isInProgress(shard ShardLike) bool {
+	filename, _ := t.lastInProgress(shard)
+	return filename != ""
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) markInProgress(shard ShardLike, content string, checkpoint int) error {
+	filename := fmt.Sprintf("%s.%09d", filenameInProgress, checkpoint)
+	return t.createFile(shard, filename, content)
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) readProgress(shard ShardLike) (string, int, error) {
+	filename, err := t.lastInProgress(shard)
+	if err != nil {
+		return "", 0, err
+	}
+
+	checkpointStr := strings.TrimPrefix(filename, filenameInProgress+".")
+	checkpoint, err := strconv.Atoi(checkpointStr)
+	if err != nil {
+		return "", 0, err
+	}
+
+	path := t.filepath(shard, filename)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return string(content), checkpoint, nil
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) lastInProgress(shard ShardLike) (string, error) {
+	migrationPath := t.migrationPath(shard)
+
+	// fmt.Printf("  ==> migrationpath [%s]\n\n", migrationPath)
+
+	prefix := filenameInProgress + "."
+	expectedLen := len(prefix) + 9 // 9 digits
+
+	lastMigrationFilename := ""
+	err := filepath.WalkDir(migrationPath, func(path string, d os.DirEntry, err error) error {
+		// fmt.Printf("  ==> walkdir path [%s] name [%s] len [%d] explen [%d]\n\n", path, d.Name(), len(d.Name()), expectedLen)
+
+		if path != migrationPath {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			if name := d.Name(); len(name) == expectedLen && strings.HasPrefix(name, prefix) {
+				lastMigrationFilename = name
+			}
+		}
+		return nil
+	})
+
+	return lastMigrationFilename, err
+}
+
 func (t *ShardInvertedReindexTask_MapToBlockmax) createFile(shard ShardLike, filename string, content string) error {
 	path := t.filepath(shard, filename)
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o777)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o777)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	_, err = file.WriteString(content)
-	return err
+	if content != "" {
+		_, err = file.WriteString(content)
+		return err
+	}
+	return nil
 }
-
-// func (t *ShardInvertedReindexTask_MapToBlockmax) isFinished(shard ShardLike) bool {
-
-// }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) GetPropertiesToReindex(ctx context.Context,
 	shard ShardLike,
