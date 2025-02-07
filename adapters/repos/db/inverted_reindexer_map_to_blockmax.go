@@ -12,6 +12,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -24,6 +25,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/adapters/repos/db/lsmkv"
+	"github.com/weaviate/weaviate/entities/additional"
+	"github.com/weaviate/weaviate/entities/storobj"
 )
 
 type ShardInvertedReindexTask2 interface {
@@ -122,19 +125,45 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	fmt.Printf("  ==> all props [%+v]\n\n", t.propsByCollectionShard)
 	fmt.Printf("  ==> all lsm dirs [%+v]\n\n", t.lsmPathsByCollectionShard)
 
-	collectionName := shard.Index().Config.ClassName.String()
+	if t.isFinished(shard) {
+		return nil
+	}
 
+	collectionName := shard.Index().Config.ClassName.String()
 	props, ok := t.propsByCollectionShard[collectionName][shard.Name()]
 	if !ok || len(props) == 0 {
 		fmt.Printf("  ==> no props found\n\n")
 		return nil
 	}
 
-	bucketsByPropName := map[string]*lsmkv.Bucket{}
+	lastProcessedKey := []byte{}
+	checkpoint := 1
+	dirty := false
+
+	if !t.isStarted(shard) {
+		if err := t.markStarted(shard); err != nil {
+			return err
+		}
+	}
+
+	if lastProgressFilename, err := t.lastInProgress(shard); err != nil {
+		return err
+	} else if lastProgressFilename != "" {
+		if lastProcessedKey, checkpoint, err = t.readProgress(shard, lastProgressFilename); err != nil {
+			return err
+		}
+	}
+
 	store := shard.Store()
+	propNames := make([]string, 0, len(props))
+	propNames2 := make([][]string, 0, len(props))
+	bucketsByPropName := map[string]*lsmkv.Bucket{}
 
 	// create / load temp bucket for each property
 	for _, prop := range props {
+		propNames = append(propNames, prop.PropertyName)
+		propNames2 = append(propNames2, []string{prop.PropertyName})
+
 		// TODO blockmax/aliszka turn off compaction?
 		bucketName := t.reindexBucketName(prop.PropertyName)
 		err := store.CreateOrLoadBucket(ctx, bucketName,
@@ -146,31 +175,43 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		bucketsByPropName[prop.PropertyName] = store.Bucket(bucketName)
 	}
 
-	if !t.isStarted(shard) {
-		t.markStarted(shard)
-	}
+	fmt.Printf("  ==> bucketsByPropName [%+v]\n", bucketsByPropName)
+	fmt.Printf("  ==> props names [%+v]\n", propNames)
 
-	last, err := t.lastInProgress(shard)
+	objectsBucket := store.Bucket(helpers.ObjectsBucketLSM)
+	cursor := objectsBucket.Cursor()
+	defer cursor.Close()
+	timeCursorCreated := time.Now()
+	// run for X minutes
+	// pause for Y minutes
 
-	fmt.Printf("  ==> last in progress [%s] err [%s]\n\n", last, err)
-	checkpoint := 123
-
-	if !t.isInProgress(shard) {
-		fmt.Printf("  ==> not in progress\n\n")
-
-		// for i := 0; i < 10; i++ {
-		t.markInProgress(shard, "something in the way", checkpoint)
-		// 	checkpoint++
-		// }
-
+	var k, v []byte
+	if len(lastProcessedKey) == 0 {
+		k, v = cursor.First()
 	} else {
-		lastProcessed, checkpoint, err := t.readProgress(shard)
-
-		fmt.Printf("  ==> last processed [%s] checkpoint [%d] err [%s]\n\n", lastProcessed, checkpoint, err)
+		k, v = cursor.Seek(lastProcessedKey)
+		if bytes.Equal(k, lastProcessedKey) {
+			k, v = cursor.Next()
+		}
 	}
 
-	fmt.Printf("  ==> bucketsByPropName [%+v]\n\n", bucketsByPropName)
+	propExtraction := &storobj.PropertyExtraction{PropStrings: propNames, PropStringsList: propNames2}
+	addProps := additional.Properties{}
+	for ; k != nil; k, v = cursor.Next() {
+		obj, err := storobj.FromBinaryOptional(v, addProps, propExtraction)
+		if err != nil {
+			// TODO handle dirty
+			return err
+		}
 
+		fmt.Printf("  ==> obj\n %+v\n\n", obj)
+	}
+
+	fmt.Printf("  ==> time cursor [%s] checkpoint [%d] dirty [%v]\n\n", timeCursorCreated, checkpoint, dirty)
+
+	// objectsBucket.IterateObjects()
+
+	// TODO handle dirty
 	return nil
 }
 
@@ -221,25 +262,20 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) markInProgress(shard ShardLike,
 	return t.createFile(shard, filename, content)
 }
 
-func (t *ShardInvertedReindexTask_MapToBlockmax) readProgress(shard ShardLike) (string, int, error) {
-	filename, err := t.lastInProgress(shard)
-	if err != nil {
-		return "", 0, err
-	}
-
+func (t *ShardInvertedReindexTask_MapToBlockmax) readProgress(shard ShardLike, filename string) ([]byte, int, error) {
 	checkpointStr := strings.TrimPrefix(filename, filenameInProgress+".")
 	checkpoint, err := strconv.Atoi(checkpointStr)
 	if err != nil {
-		return "", 0, err
+		return nil, 0, err
 	}
 
 	path := t.filepath(shard, filename)
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return "", 0, err
+		return nil, 0, err
 	}
 
-	return string(content), checkpoint, nil
+	return content, checkpoint, nil
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) lastInProgress(shard ShardLike) (string, error) {
@@ -266,6 +302,10 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) lastInProgress(shard ShardLike)
 	})
 
 	return lastMigrationFilename, err
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) isFinished(shard ShardLike) bool {
+	return t.fileExists(shard, filenameFinished)
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) createFile(shard ShardLike, filename string, content string) error {
