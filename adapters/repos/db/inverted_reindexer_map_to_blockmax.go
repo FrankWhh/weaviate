@@ -132,13 +132,17 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	}
 
 	lastProcessedKey := []byte{}
+	migrationStarted := time.Now()
 	nextCheckpoint := 1
 	dirty := false
+	var err error
 
 	if !t.isStarted(shard) {
-		if err := t.markStarted(shard); err != nil {
+		if err := t.markStarted(shard, migrationStarted); err != nil {
 			return err
 		}
+	} else if migrationStarted, err = t.readStarted(shard); err != nil {
+		return err
 	}
 
 	if lastProgressFilename, err := t.lastInProgress(shard); err != nil {
@@ -151,7 +155,8 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		nextCheckpoint = lastCheckpoint + 1
 	}
 
-	fmt.Printf("  ==> PROGRESS: lastProcessedKey [%s] nextCeckpoint [%d]\n\n", t.keyToStr(lastProcessedKey), nextCheckpoint)
+	fmt.Printf("  ==> PROGRESS: lastProcessedKey [%s] nextCeckpoint [%d] migrationStarted [%s]\n\n",
+		t.keyToStr(lastProcessedKey), nextCheckpoint, migrationStarted)
 
 	store := shard.Store()
 	bucketsByPropName := map[string]*lsmkv.Bucket{}
@@ -371,8 +376,17 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) isStarted(shard ShardLike) bool
 	return t.fileExists(shard, filenameStarted)
 }
 
-func (t *ShardInvertedReindexTask_MapToBlockmax) markStarted(shard ShardLike) error {
-	return t.createFile(shard, filenameStarted, []byte(time.Now().UTC().String()))
+func (t *ShardInvertedReindexTask_MapToBlockmax) markStarted(shard ShardLike, started time.Time) error {
+	return t.createFile(shard, filenameStarted, []byte(started.UTC().Format(time.RFC3339Nano)))
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) readStarted(shard ShardLike) (time.Time, error) {
+	path := t.filepath(shard, filenameStarted)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339Nano, string(content))
 }
 
 // func (t *ShardInvertedReindexTask_MapToBlockmax) isInProgress(shard ShardLike) bool {
@@ -385,7 +399,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) markInProgress(shard ShardLike,
 ) error {
 	filename := fmt.Sprintf("%s.%09d", filenameInProgress, checkpoint)
 	content := strings.Join([]string{
-		time.Now().UTC().String(),
+		time.Now().UTC().Format(time.RFC3339Nano),
 		t.keyToStr(lastProccessedKey),
 		fmt.Sprint(count),
 	}, "\n")
@@ -451,7 +465,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) isFinished(shard ShardLike) boo
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) markFinished(shard ShardLike) error {
-	return t.createFile(shard, filenameFinished, []byte(time.Now().UTC().String()))
+	return t.createFile(shard, filenameFinished, []byte(time.Now().UTC().Format(time.RFC3339Nano)))
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) createFile(shard ShardLike, filename string, content []byte) error {
