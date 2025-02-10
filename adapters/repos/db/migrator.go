@@ -903,6 +903,7 @@ func (r *Reindexer) Reindex(ctx context.Context) error {
 		}
 
 		task := r.tasks[name]
+		// TODO concurrently on collections
 		for _, index := range r.indexes {
 			err := index.ForEachShardConcurrently(func(_ string, shard ShardLike) error {
 				return task.Reindex(ctx, shard)

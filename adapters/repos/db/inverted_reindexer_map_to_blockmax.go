@@ -137,14 +137,15 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	var err error
 
 	if !t.isStarted(shard) {
-		if err := t.markStarted(shard, migrationStarted); err != nil {
+		if err = t.markStarted(shard, migrationStarted); err != nil {
 			return err
 		}
 	} else if migrationStarted, err = t.readStarted(shard); err != nil {
 		return err
 	}
 
-	if lastProgressFilename, err := t.lastInProgress(shard); err != nil {
+	var lastProgressFilename string
+	if lastProgressFilename, err = t.lastInProgress(shard); err != nil {
 		return err
 	} else if lastProgressFilename != "" {
 		var lastCheckpoint int
@@ -162,13 +163,17 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	propExtraction := storobj.NewPropExtraction()
 	addProps := additional.Properties{}
 
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+
 	// create / load temp bucket for each property
 	for _, prop := range props {
 		propExtraction.Add(prop.PropertyName)
 
 		// TODO blockmax/aliszka turn off compaction?
 		bucketName := t.reindexBucketName(prop.PropertyName)
-		err := store.CreateOrLoadBucket(ctx, bucketName,
+		err = store.CreateOrLoadBucket(ctx, bucketName,
 			lsmkv.WithDirtyThreshold(time.Duration(shard.Index().Config.MemtablesFlushDirtyAfter)*time.Second),
 			lsmkv.WithStrategy(lsmkv.StrategyInverted))
 		if err != nil {
@@ -181,6 +186,24 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	fmt.Printf("  ==> bucketsByPropName [%+v]\n", bucketsByPropName)
 
 	objectsBucket := store.Bucket(helpers.ObjectsBucketLSM)
+	lastProcessedKey := t.cloneKey(lastStoredKey, nil)
+	processedCounter := 0
+
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+
+	defer func() {
+		fmt.Printf("  ==> [%s] defer err [%s] lastStoredKey [%s] lastProcessedKey [%s]\n\n",
+			time.Now(), err, t.keyToStr(lastStoredKey), t.keyToStr(lastProcessedKey))
+
+		if err != nil && !bytes.Equal(lastStoredKey, lastProcessedKey) {
+			t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint)
+
+			fmt.Printf("  ==> [%s] marked progrees (defer) on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
+				t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
+		}
+	}()
 
 	// c := objectsBucket.Cursor()
 	// i := 0
@@ -192,7 +215,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 
 	fmt.Printf("  ==> [%s] main loop starting\n", time.Now())
 	for {
-		if ok, err := func() (bool, error) {
+		if ok, err = func() (bool, error) {
 			fmt.Printf("  ==> [%s] before cursor created\n", time.Now())
 			cursor := objectsBucket.Cursor()
 			fmt.Printf("  ==> [%s] after cursor created\n", time.Now())
@@ -217,12 +240,12 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 
 			fmt.Printf("  ==> [%s] cursor starting with key [%s]\n", time.Now(), t.keyToStr(k))
 
-			lastProcessedKey := t.cloneKey(lastStoredKey, nil)
-			counter := 0
 			for ; k != nil; k, v = cursor.Next() {
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
 				obj, err := storobj.FromBinaryOptional(v, addProps, propExtraction)
 				if err != nil {
-					// TODO handle dirty
 					return false, err
 				}
 
@@ -234,7 +257,6 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				if obj.LastUpdateTimeUnix() < migrationStarted.UnixMilli() {
 					props, _, err := shard.AnalyzeObject(obj)
 					if err != nil {
-						// TODO handle dirty
 						return false, err
 					}
 
@@ -250,7 +272,6 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 							for _, item := range invprop.Items {
 								pair := shard.pairPropertyWithFrequency(obj.DocID, item.TermFrequency, propLen)
 								if err := shard.addToPropertyMapBucket(bucket, pair, item.Data); err != nil {
-									// TODO handle dirty
 									return false, err
 								}
 							}
@@ -260,7 +281,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 
 				// all added
 				lastProcessedKey = t.cloneKey(k, lastProcessedKey)
-				counter++
+				processedCounter++
 
 				// long processing
 				time.Sleep(2 * time.Second)
@@ -268,22 +289,22 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				fmt.Printf("  ==> [%s] last processed key [%s]\n", time.Now(), t.keyToStr(lastProcessedKey))
 
 				// check time every 100 objects processed to halt
-				if counter%countObjectsCheck == 0 {
-					fmt.Printf("  ==> [%s] checking time on counter [%d]\n", time.Now(), counter)
+				if processedCounter%countObjectsCheck == 0 {
+					fmt.Printf("  ==> [%s] checking time on counter [%d]\n", time.Now(), processedCounter)
 
 					if time.Since(processingStarted) > durationProcessing {
 						fmt.Printf("  ==> [%s] duration exceeded\n", time.Now())
 
 						// store checkpoint
-						if err := t.markInProgress(shard, lastProcessedKey, counter, nextCheckpoint); err != nil {
-							// TODO handle dirty ??
+						if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
 							return false, err
 						}
 						fmt.Printf("  ==> [%s] marked progrees on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
-							t.keyToStr(lastProcessedKey), counter, nextCheckpoint)
+							t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
 
 						nextCheckpoint++
 						lastStoredKey = t.cloneKey(lastProcessedKey, lastStoredKey)
+						processedCounter = 0
 						k, _ = cursor.Next()
 						break
 					}
@@ -294,15 +315,15 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				t.keyToStr(lastStoredKey), t.keyToStr(lastProcessedKey))
 
 			if !bytes.Equal(lastStoredKey, lastProcessedKey) {
-				if err := t.markInProgress(shard, lastProcessedKey, counter, nextCheckpoint); err != nil {
-					// TODO handle dirty ??
+				if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
 					return false, err
 				}
 				fmt.Printf("  ==> [%s] marked progrees (dirty) on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
-					t.keyToStr(lastProcessedKey), counter, nextCheckpoint)
+					t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
 
 				nextCheckpoint++
 				lastStoredKey = t.cloneKey(lastProcessedKey, lastStoredKey)
+				processedCounter = 0
 			}
 			if k == nil {
 				return false, nil
@@ -311,22 +332,24 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		}(); err != nil {
 			return err
 		} else if !ok {
-			if err := t.markFinished(shard); err != nil {
-				// TODO handle dirty ??
+			if err = t.markFinished(shard); err != nil {
 				return err
 			}
 			fmt.Printf("  ==> [%s] marked finished\n", time.Now())
 			break
 		}
+
 		timer := time.NewTimer(durationPause)
 		fmt.Printf("  ==> [%s] timer started\n", time.Now())
-		// select {
-		// case <-timer.C:
-		// 	// TODO aliszka:blockmax add ctx
-		// 	// timer.Stop()
-		// }
-		<-timer.C
-		fmt.Printf("  ==> [%s] timer finished\n", time.Now())
+		select {
+		case <-timer.C:
+			fmt.Printf("  ==> [%s] timer finished, continue\n", time.Now())
+		case <-ctx.Done():
+			fmt.Printf("  ==> [%s] context done before timer\n", time.Now())
+			timer.Stop()
+			err = ctx.Err()
+			return err
+		}
 	}
 
 	fmt.Printf("  ==> GREAT SUCCESS\n\n")
