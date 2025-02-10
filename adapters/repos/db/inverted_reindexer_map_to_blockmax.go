@@ -151,6 +151,8 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		nextCheckpoint = lastCheckpoint + 1
 	}
 
+	fmt.Printf("  ==> PROGRESS: lastProcessedKey [%s] nextCeckpoint [%d]\n\n", t.keyToStr(lastProcessedKey), nextCheckpoint)
+
 	store := shard.Store()
 	bucketsByPropName := map[string]*lsmkv.Bucket{}
 	propExtraction := storobj.NewPropExtraction()
@@ -176,7 +178,15 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 
 	objectsBucket := store.Bucket(helpers.ObjectsBucketLSM)
 
-	fmt.Printf("  ==> [%s] loop starting\n", time.Now())
+	// c := objectsBucket.Cursor()
+	// i := 0
+	// for k, _ := c.First(); k != nil; k, _ = c.Next() {
+	// 	fmt.Printf("  ==> CURSOR [%d][%s]\n", i, t.keyToStr(k))
+	// 	i++
+	// }
+	// c.Close()
+
+	fmt.Printf("  ==> [%s] main loop starting\n", time.Now())
 	for {
 		dirty = false
 		if ok, err := func() (bool, error) {
@@ -186,9 +196,11 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 			defer func() {
 				fmt.Printf("  ==> [%s] before cursor closed\n", time.Now())
 				cursor.Close()
-				fmt.Printf("  ==> [%s] after cursor close\n", time.Now())
+				fmt.Printf("  ==> [%s] after cursor closed\n", time.Now())
 			}()
 			processingStarted := time.Now()
+
+			fmt.Printf("  ==> [%s] to be found key [%s]\n", time.Now(), t.keyToStr(lastProcessedKey))
 
 			var k, v []byte
 			if len(lastProcessedKey) == 0 {
@@ -200,7 +212,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				}
 			}
 
-			fmt.Printf("  ==> [%s] starting with key [%s]\n", time.Now(), t.keyToStr(k))
+			fmt.Printf("  ==> [%s] cursor starting with key [%s]\n", time.Now(), t.keyToStr(k))
 
 			counter := 0
 			for ; k != nil; k, v = cursor.Next() {
@@ -236,7 +248,12 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				dirty = true
 
 				// all added
-				lastProcessedKey = k
+				if cap(lastProcessedKey) < len(k) {
+					lastProcessedKey = make([]byte, len(k))
+				} else {
+					lastProcessedKey = lastProcessedKey[:len(k)]
+				}
+				copy(lastProcessedKey, k)
 				counter++
 
 				// long processing
@@ -355,7 +372,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) isStarted(shard ShardLike) bool
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) markStarted(shard ShardLike) error {
-	return t.createFile(shard, filenameStarted, []byte(time.Now().String()))
+	return t.createFile(shard, filenameStarted, []byte(time.Now().UTC().String()))
 }
 
 // func (t *ShardInvertedReindexTask_MapToBlockmax) isInProgress(shard ShardLike) bool {
@@ -367,7 +384,11 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) markInProgress(shard ShardLike,
 	count int, checkpoint int,
 ) error {
 	filename := fmt.Sprintf("%s.%09d", filenameInProgress, checkpoint)
-	content := strings.Join([]string{t.keyToStr(lastProccessedKey), fmt.Sprint(count), time.Now().String()}, "\n")
+	content := strings.Join([]string{
+		time.Now().UTC().String(),
+		t.keyToStr(lastProccessedKey),
+		fmt.Sprint(count),
+	}, "\n")
 	return t.createFile(shard, filename, []byte(content))
 }
 
@@ -384,7 +405,19 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) readProgress(shard ShardLike, f
 		return nil, 0, err
 	}
 
-	return content, checkpoint, nil
+	splitted := strings.Split(string(content), "\n")
+	// fmt.Printf("  ==> splitted %+v\n\n", splitted)
+	lastProcessedKeyStr := splitted[1]
+	uid, err := uuid.Parse(lastProcessedKeyStr)
+	if err != nil {
+		return nil, 0, err
+	}
+	lastProcessedKey, err := uid.MarshalBinary()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return lastProcessedKey, checkpoint, nil
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) lastInProgress(shard ShardLike) (string, error) {
@@ -418,7 +451,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) isFinished(shard ShardLike) boo
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) markFinished(shard ShardLike) error {
-	return t.createFile(shard, filenameFinished, []byte(time.Now().String()))
+	return t.createFile(shard, filenameFinished, []byte(time.Now().UTC().String()))
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) createFile(shard ShardLike, filename string, content []byte) error {
