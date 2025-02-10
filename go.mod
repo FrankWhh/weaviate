@@ -31,7 +31,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/weaviate/contextionary v1.2.1
 	github.com/willf/bloom v2.0.3+incompatible
-	go.etcd.io/bbolt v1.3.11
+	go.etcd.io/bbolt v1.4.0
 	go.opentelemetry.io/otel v1.32.0 // indirect
 	golang.org/x/net v0.34.0
 	golang.org/x/oauth2 v0.25.0
@@ -225,5 +225,4 @@ require (
 )
 
 go 1.22.0
-
 toolchain go1.23.4
