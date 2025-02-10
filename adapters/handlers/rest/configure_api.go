@@ -639,7 +639,7 @@ func MakeAppState(ctx context.Context, options *swag.CommandLineOptionsGroup) *s
 				// continue despite error
 				enterrors.GoWrapper(func() {
 					logger().Info("starting reindexing")
-					err := reindexer.Reindex(ctx)
+					err := reindexer.Reindex(reindexCtx)
 					reindexFinished2 <- err
 					if err != nil {
 						logger().WithError(err).Error("reindexing failed")
@@ -655,7 +655,7 @@ func MakeAppState(ctx context.Context, options *swag.CommandLineOptionsGroup) *s
 					reindexFinished2 <- err
 				} else {
 					logger().Info("starting reindexing")
-					err := reindexer.Reindex(ctx)
+					err := reindexer.Reindex(reindexCtx)
 					reindexFinished2 <- err
 					if err != nil {
 						logger().WithError(err).Error("reindexing failed")

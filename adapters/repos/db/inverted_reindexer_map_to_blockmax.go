@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
@@ -45,22 +46,14 @@ const (
 	filenameStarted    = "started.mig"
 	filenameInProgress = "inProgress.mig"
 	filenameFinished   = "finished.mig"
-)
 
-var (
-	filenameInProgressGlob = ""
+	durationProcessing = 3 * time.Second
+	durationPause      = 2 * time.Second
+	countObjectsCheck  = 1
+	// durationProcessing = 5 * time.Minute
+	// durationPause      = 2 * time.Minute
+	// countObjectsCheck  = 100
 )
-
-func init() {
-	globDigit := "[0-9]"
-	builder := new(strings.Builder)
-	builder.WriteString(filenameInProgress)
-	builder.WriteString(".")
-	for i := 0; i < 9; i++ {
-		builder.WriteString(globDigit)
-	}
-	filenameInProgressGlob = builder.String()
-}
 
 type ShardInvertedReindexTask_MapToBlockmax struct {
 	logger logrus.FieldLogger
@@ -121,15 +114,17 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) OnBeforeShard(ctx context.Conte
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, shard ShardLike) error {
-	fmt.Printf("  ==> ShardInvertedReindexTask_MapToBlockmax::Reindex [%s]\n", shard.Name())
-	fmt.Printf("  ==> all props [%+v]\n\n", t.propsByCollectionShard)
+	collectionName := shard.Index().Config.ClassName.String()
+
+	fmt.Printf("  ==> ShardInvertedReindexTask_MapToBlockmax::Reindex [%s][%s]\n", collectionName, shard.Name())
+	fmt.Printf("  ==> all props [%+v]\n", t.propsByCollectionShard)
 	fmt.Printf("  ==> all lsm dirs [%+v]\n\n", t.lsmPathsByCollectionShard)
 
 	if t.isFinished(shard) {
+		fmt.Printf("  ==> reindexing finished\n\n")
 		return nil
 	}
 
-	collectionName := shard.Index().Config.ClassName.String()
 	props, ok := t.propsByCollectionShard[collectionName][shard.Name()]
 	if !ok || len(props) == 0 {
 		fmt.Printf("  ==> no props found\n\n")
@@ -137,7 +132,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	}
 
 	lastProcessedKey := []byte{}
-	checkpoint := 1
+	nextCheckpoint := 1
 	dirty := false
 
 	if !t.isStarted(shard) {
@@ -149,25 +144,27 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	if lastProgressFilename, err := t.lastInProgress(shard); err != nil {
 		return err
 	} else if lastProgressFilename != "" {
-		if lastProcessedKey, checkpoint, err = t.readProgress(shard, lastProgressFilename); err != nil {
+		var lastCheckpoint int
+		if lastProcessedKey, lastCheckpoint, err = t.readProgress(shard, lastProgressFilename); err != nil {
 			return err
 		}
+		nextCheckpoint = lastCheckpoint + 1
 	}
 
 	store := shard.Store()
-	propNames := make([]string, 0, len(props))
-	propNames2 := make([][]string, 0, len(props))
 	bucketsByPropName := map[string]*lsmkv.Bucket{}
+	propExtraction := storobj.NewPropExtraction()
+	addProps := additional.Properties{}
 
 	// create / load temp bucket for each property
 	for _, prop := range props {
-		propNames = append(propNames, prop.PropertyName)
-		propNames2 = append(propNames2, []string{prop.PropertyName})
+		propExtraction.Add(prop.PropertyName)
 
 		// TODO blockmax/aliszka turn off compaction?
 		bucketName := t.reindexBucketName(prop.PropertyName)
 		err := store.CreateOrLoadBucket(ctx, bucketName,
-			lsmkv.WithDirtyThreshold(time.Duration(shard.Index().Config.MemtablesFlushDirtyAfter)*time.Second))
+			lsmkv.WithDirtyThreshold(time.Duration(shard.Index().Config.MemtablesFlushDirtyAfter)*time.Second),
+			lsmkv.WithStrategy(lsmkv.StrategyInverted))
 		if err != nil {
 			return err
 		}
@@ -176,43 +173,152 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	}
 
 	fmt.Printf("  ==> bucketsByPropName [%+v]\n", bucketsByPropName)
-	fmt.Printf("  ==> props names [%+v]\n", propNames)
 
 	objectsBucket := store.Bucket(helpers.ObjectsBucketLSM)
-	cursor := objectsBucket.Cursor()
-	defer cursor.Close()
-	timeCursorCreated := time.Now()
-	// run for X minutes
-	// pause for Y minutes
 
-	var k, v []byte
-	if len(lastProcessedKey) == 0 {
-		k, v = cursor.First()
-	} else {
-		k, v = cursor.Seek(lastProcessedKey)
-		if bytes.Equal(k, lastProcessedKey) {
-			k, v = cursor.Next()
-		}
-	}
+	fmt.Printf("  ==> [%s] loop starting\n", time.Now())
+	for {
+		dirty = false
+		if ok, err := func() (bool, error) {
+			fmt.Printf("  ==> [%s] before cursor created\n", time.Now())
+			cursor := objectsBucket.Cursor()
+			fmt.Printf("  ==> [%s] after cursor created\n", time.Now())
+			defer func() {
+				fmt.Printf("  ==> [%s] before cursor closed\n", time.Now())
+				cursor.Close()
+				fmt.Printf("  ==> [%s] after cursor close\n", time.Now())
+			}()
+			processingStarted := time.Now()
 
-	propExtraction := &storobj.PropertyExtraction{PropStrings: propNames, PropStringsList: propNames2}
-	addProps := additional.Properties{}
-	for ; k != nil; k, v = cursor.Next() {
-		obj, err := storobj.FromBinaryOptional(v, addProps, propExtraction)
-		if err != nil {
-			// TODO handle dirty
+			var k, v []byte
+			if len(lastProcessedKey) == 0 {
+				k, v = cursor.First()
+			} else {
+				k, v = cursor.Seek(lastProcessedKey)
+				if bytes.Equal(k, lastProcessedKey) {
+					k, v = cursor.Next()
+				}
+			}
+
+			fmt.Printf("  ==> [%s] starting with key [%s]\n", time.Now(), t.keyToStr(k))
+
+			counter := 0
+			for ; k != nil; k, v = cursor.Next() {
+				obj, err := storobj.FromBinaryOptional(v, addProps, propExtraction)
+				if err != nil {
+					// TODO handle dirty
+					return false, err
+				}
+
+				props, _, err := shard.AnalyzeObject(obj)
+				if err != nil {
+					// TODO handle dirty
+					return false, err
+				}
+
+				for _, invprop := range props {
+					if bucket, ok := bucketsByPropName[invprop.Name]; ok {
+
+						propLen := float32(0)
+						for _, item := range invprop.Items {
+							propLen += item.TermFrequency
+						}
+
+						for _, item := range invprop.Items {
+							pair := shard.pairPropertyWithFrequency(obj.DocID, item.TermFrequency, propLen)
+							if err := shard.addToPropertyMapBucket(bucket, pair, item.Data); err != nil {
+								// TODO handle dirty
+								return false, err
+							}
+						}
+					}
+				}
+				dirty = true
+
+				// all added
+				lastProcessedKey = k
+				counter++
+
+				// long processing
+				time.Sleep(2 * time.Second)
+
+				fmt.Printf("  ==> [%s] last processed key [%s]\n", time.Now(), t.keyToStr(lastProcessedKey))
+
+				// check time every 100 objects processed to halt
+				if counter%countObjectsCheck == 0 {
+					fmt.Printf("  ==> [%s] checking time on counter [%d]\n", time.Now(), counter)
+
+					if time.Since(processingStarted) > durationProcessing {
+						fmt.Printf("  ==> [%s] duration exceeded\n", time.Now())
+
+						// store checkpoint
+						if err := t.markInProgress(shard, lastProcessedKey, counter, nextCheckpoint); err != nil {
+							// TODO handle dirty ??
+							return false, err
+						}
+						fmt.Printf("  ==> [%s] marked progrees on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
+							t.keyToStr(lastProcessedKey), counter, nextCheckpoint)
+
+						nextCheckpoint++
+						dirty = false
+						k, _ = cursor.Next()
+						break
+					}
+				}
+			}
+			if dirty {
+				if err := t.markInProgress(shard, lastProcessedKey, counter, nextCheckpoint); err != nil {
+					// TODO handle dirty ??
+					return false, err
+				}
+				fmt.Printf("  ==> [%s] marked progrees (dirty) on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
+					t.keyToStr(lastProcessedKey), counter, nextCheckpoint)
+
+				nextCheckpoint++
+				dirty = false
+			}
+			if k == nil {
+				return false, nil
+			}
+			return true, nil
+		}(); err != nil {
 			return err
+		} else if !ok {
+			if err := t.markFinished(shard); err != nil {
+				// TODO handle dirty ??
+				return err
+			}
+			fmt.Printf("  ==> [%s] marked finished\n", time.Now())
+			break
 		}
-
-		fmt.Printf("  ==> obj\n %+v\n\n", obj)
+		timer := time.NewTimer(durationPause)
+		fmt.Printf("  ==> [%s] timer started\n", time.Now())
+		// select {
+		// case <-timer.C:
+		// 	// TODO aliszka:blockmax add ctx
+		// 	// timer.Stop()
+		// }
+		<-timer.C
+		fmt.Printf("  ==> [%s] timer finished\n", time.Now())
 	}
 
-	fmt.Printf("  ==> time cursor [%s] checkpoint [%d] dirty [%v]\n\n", timeCursorCreated, checkpoint, dirty)
+	fmt.Printf("  ==> GREAT SUCCESS\n\n")
+
+	// fmt.Printf("  ==> time cursor [%s] checkpoint [%d] dirty [%v]\n\n", timeProcessingStarted, checkpoint, dirty)
 
 	// objectsBucket.IterateObjects()
 
 	// TODO handle dirty
 	return nil
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) keyToStr(uuidBytes []byte) string {
+	if len(uuidBytes) == 0 {
+		return ""
+	}
+	uid := uuid.UUID{}
+	uid.UnmarshalBinary(uuidBytes)
+	return uid.String()
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) reindexBucketName(propName string) string {
@@ -249,17 +355,20 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) isStarted(shard ShardLike) bool
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) markStarted(shard ShardLike) error {
-	return t.createFile(shard, filenameStarted, time.Now().String())
+	return t.createFile(shard, filenameStarted, []byte(time.Now().String()))
 }
 
-func (t *ShardInvertedReindexTask_MapToBlockmax) isInProgress(shard ShardLike) bool {
-	filename, _ := t.lastInProgress(shard)
-	return filename != ""
-}
+// func (t *ShardInvertedReindexTask_MapToBlockmax) isInProgress(shard ShardLike) bool {
+// 	filename, _ := t.lastInProgress(shard)
+// 	return filename != ""
+// }
 
-func (t *ShardInvertedReindexTask_MapToBlockmax) markInProgress(shard ShardLike, content string, checkpoint int) error {
+func (t *ShardInvertedReindexTask_MapToBlockmax) markInProgress(shard ShardLike, lastProccessedKey []byte,
+	count int, checkpoint int,
+) error {
 	filename := fmt.Sprintf("%s.%09d", filenameInProgress, checkpoint)
-	return t.createFile(shard, filename, content)
+	content := strings.Join([]string{t.keyToStr(lastProccessedKey), fmt.Sprint(count), time.Now().String()}, "\n")
+	return t.createFile(shard, filename, []byte(content))
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) readProgress(shard ShardLike, filename string) ([]byte, int, error) {
@@ -308,7 +417,11 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) isFinished(shard ShardLike) boo
 	return t.fileExists(shard, filenameFinished)
 }
 
-func (t *ShardInvertedReindexTask_MapToBlockmax) createFile(shard ShardLike, filename string, content string) error {
+func (t *ShardInvertedReindexTask_MapToBlockmax) markFinished(shard ShardLike) error {
+	return t.createFile(shard, filenameFinished, []byte(time.Now().String()))
+}
+
+func (t *ShardInvertedReindexTask_MapToBlockmax) createFile(shard ShardLike, filename string, content []byte) error {
 	path := t.filepath(shard, filename)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o777)
 	if err != nil {
@@ -316,8 +429,8 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) createFile(shard ShardLike, fil
 	}
 	defer file.Close()
 
-	if content != "" {
-		_, err = file.WriteString(content)
+	if len(content) > 0 {
+		_, err = file.Write(content)
 		return err
 	}
 	return nil
@@ -328,9 +441,9 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) GetPropertiesToReindex(ctx cont
 ) ([]ReindexableProperty, error) {
 	reindexableProperties := []ReindexableProperty{}
 
-	bucketOptions := []lsmkv.BucketOption{
-		lsmkv.WithDirtyThreshold(time.Duration(shard.Index().Config.MemtablesFlushDirtyAfter) * time.Second),
-	}
+	// bucketOptions := []lsmkv.BucketOption{
+	// 	lsmkv.WithDirtyThreshold(time.Duration(shard.Index().Config.MemtablesFlushDirtyAfter) * time.Second),
+	// }
 
 	for name, bucket := range shard.Store().GetBucketsByStrategy(lsmkv.StrategyMapCollection) {
 		// fmt.Printf("  ==> bucket name of map collection [%s] strategy [%s] desired [%s]\n\n",
@@ -349,7 +462,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) GetPropertiesToReindex(ctx cont
 						PropertyName:    propName,
 						IndexType:       IndexTypePropValue,
 						DesiredStrategy: lsmkv.StrategyInverted,
-						BucketOptions:   bucketOptions,
+						// BucketOptions:   bucketOptions,
 					},
 				)
 			default:
