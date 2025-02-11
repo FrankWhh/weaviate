@@ -120,14 +120,14 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	fmt.Printf("  ==> all props [%+v]\n", t.propsByCollectionShard)
 	fmt.Printf("  ==> all lsm dirs [%+v]\n\n", t.lsmPathsByCollectionShard)
 
-	if t.isFinished(shard) {
-		fmt.Printf("  ==> reindexing finished\n\n")
-		return nil
-	}
-
 	props, ok := t.propsByCollectionShard[collectionName][shard.Name()]
 	if !ok || len(props) == 0 {
 		fmt.Printf("  ==> no props found\n\n")
+		return nil
+	}
+
+	if t.isFinished(shard) {
+		fmt.Printf("  ==> reindexing finished\n\n")
 		return nil
 	}
 

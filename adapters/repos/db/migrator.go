@@ -26,6 +26,7 @@ import (
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/hnsw"
 	command "github.com/weaviate/weaviate/cluster/proto/api"
 	"github.com/weaviate/weaviate/cluster/types"
+	"github.com/weaviate/weaviate/entities/concurrency"
 	"github.com/weaviate/weaviate/entities/errorcompounder"
 	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/entities/models"
@@ -892,9 +893,15 @@ func (r *Reindexer) OnBefore(ctx context.Context) error {
 }
 
 func (r *Reindexer) Reindex(ctx context.Context) error {
-	var errs errorcompounder.ErrorCompounder
+	errsExt := errorcompounder.NewSafe()
 
 	for _, name := range r.names {
+		if err := ctx.Err(); err != nil {
+			// TODO aliszka:blockmax add task name?
+			errsExt.Add(err)
+			break
+		}
+
 		if _, ok := r.skip[name]; ok {
 			r.logger.WithField("action", "reindexing").
 				WithField("taskName", name).
@@ -903,16 +910,42 @@ func (r *Reindexer) Reindex(ctx context.Context) error {
 		}
 
 		task := r.tasks[name]
-		// TODO concurrently on collections
+
+		egExt := enterrors.NewErrorGroupWrapper(r.logger)
+		egExt.SetLimit(concurrency.NUMCPU_2)
+
+		egInt := enterrors.NewErrorGroupWrapper(r.logger)
+		egInt.SetLimit(concurrency.NUMCPU)
+
 		for _, index := range r.indexes {
-			err := index.ForEachShardConcurrently(func(_ string, shard ShardLike) error {
-				return task.Reindex(ctx, shard)
+			if err := ctx.Err(); err != nil {
+				// TODO aliszka:blockamax add task name + collection name?
+				errsExt.Add(err)
+			}
+
+			index := index
+			egExt.Go(func() error {
+				if err := ctx.Err(); err != nil {
+					// TODO aliszka:blockamax add task name + collection name?
+					errsExt.Add(err)
+				}
+
+				errsInt := errorcompounder.NewSafe()
+				index.ForEachShard(func(shardName string, shard ShardLike) error {
+					egInt.Go(func() error {
+						errsInt.Add(task.Reindex(ctx, shard))
+						return nil
+					})
+					return ctx.Err()
+				})
+				errsExt.Add(errsInt.ToError())
+
+				return nil
 			})
-			errs.Add(err)
 		}
 	}
 
-	return errs.ToError()
+	return errsExt.ToError()
 }
 
 type ShardInvertedReindexTask3 interface {
