@@ -116,18 +116,23 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) OnBeforeShard(ctx context.Conte
 func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, shard ShardLike) error {
 	collectionName := shard.Index().Config.ClassName.String()
 
-	fmt.Printf("  ==> ShardInvertedReindexTask_MapToBlockmax::Reindex [%s][%s]\n", collectionName, shard.Name())
-	fmt.Printf("  ==> all props [%+v]\n", t.propsByCollectionShard)
-	fmt.Printf("  ==> all lsm dirs [%+v]\n\n", t.lsmPathsByCollectionShard)
+	printf := func(str string, args ...any) {
+		fmt.Printf("  ==> [%s][%s][%s] %s\n",
+			time.Now().Format(time.StampMicro), collectionName, shard.Name(), fmt.Sprintf(str, args...))
+	}
+
+	printf("ShardInvertedReindexTask_MapToBlockmax::Reindex starting")
+	// fmt.Printf("  ==> all props [%+v]\n", t.propsByCollectionShard)
+	// fmt.Printf("  ==> all lsm dirs [%+v]\n\n", t.lsmPathsByCollectionShard)
 
 	props, ok := t.propsByCollectionShard[collectionName][shard.Name()]
 	if !ok || len(props) == 0 {
-		fmt.Printf("  ==> no props found\n\n")
+		printf("no props found")
 		return nil
 	}
 
 	if t.isFinished(shard) {
-		fmt.Printf("  ==> reindexing finished\n\n")
+		printf("reindexing is marked finished")
 		return nil
 	}
 
@@ -155,8 +160,8 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		nextCheckpoint = lastCheckpoint + 1
 	}
 
-	fmt.Printf("  ==> PROGRESS: lastStoredKey [%s] nextCeckpoint [%d] migrationStarted [%s]\n\n",
-		t.keyToStr(lastStoredKey), nextCheckpoint, migrationStarted)
+	printf("PROGRESS: lastStoredKey [%s] nextCeckpoint [%d] migrationStarted [%s]",
+		t.keyToStr(lastStoredKey), nextCheckpoint, migrationStarted.Format(time.StampMicro))
 
 	store := shard.Store()
 	bucketsByPropName := map[string]*lsmkv.Bucket{}
@@ -183,7 +188,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		bucketsByPropName[prop.PropertyName] = store.Bucket(bucketName)
 	}
 
-	fmt.Printf("  ==> bucketsByPropName [%+v]\n", bucketsByPropName)
+	// fmt.Printf("  ==> bucketsByPropName [%+v]\n", bucketsByPropName)
 
 	objectsBucket := store.Bucket(helpers.ObjectsBucketLSM)
 	lastProcessedKey := t.cloneKey(lastStoredKey, nil)
@@ -194,13 +199,13 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	}
 
 	defer func() {
-		fmt.Printf("  ==> [%s] defer err [%s] lastStoredKey [%s] lastProcessedKey [%s]\n\n",
-			time.Now(), err, t.keyToStr(lastStoredKey), t.keyToStr(lastProcessedKey))
+		printf("defer err [%s] lastStoredKey [%s] lastProcessedKey [%s]",
+			err, t.keyToStr(lastStoredKey), t.keyToStr(lastProcessedKey))
 
 		if err != nil && !bytes.Equal(lastStoredKey, lastProcessedKey) {
 			t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint)
 
-			fmt.Printf("  ==> [%s] marked progrees (defer) on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
+			printf("marked progrees (defer) on key [%s] counter [%d] checkpoint [%d]",
 				t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
 		}
 	}()
@@ -213,20 +218,20 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	// }
 	// c.Close()
 
-	fmt.Printf("  ==> [%s] main loop starting\n", time.Now())
+	printf("main loop starting")
 	for {
 		if ok, err = func() (bool, error) {
-			fmt.Printf("  ==> [%s] before cursor created\n", time.Now())
+			printf("before cursor created")
 			cursor := objectsBucket.Cursor()
-			fmt.Printf("  ==> [%s] after cursor created\n", time.Now())
+			printf("after cursor created")
+
 			defer func() {
-				fmt.Printf("  ==> [%s] before cursor closed\n", time.Now())
 				cursor.Close()
-				fmt.Printf("  ==> [%s] after cursor closed\n", time.Now())
+				printf("cursor closed")
 			}()
 			processingStarted := time.Now()
 
-			fmt.Printf("  ==> [%s] to be found key [%s]\n", time.Now(), t.keyToStr(lastStoredKey))
+			printf("searching key [%s]", t.keyToStr(lastStoredKey))
 
 			var k, v []byte
 			if len(lastStoredKey) == 0 {
@@ -238,7 +243,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				}
 			}
 
-			fmt.Printf("  ==> [%s] cursor starting with key [%s]\n", time.Now(), t.keyToStr(k))
+			printf("cursor starting with key [%s]", t.keyToStr(k))
 
 			for ; k != nil; k, v = cursor.Next() {
 				if err := ctx.Err(); err != nil {
@@ -262,7 +267,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 
 					for _, invprop := range props {
 						if bucket, ok := bucketsByPropName[invprop.Name]; ok {
-							fmt.Printf("  ==> [%s] adding prop %s\n", time.Now(), invprop.Name)
+							printf("adding prop [%s]", invprop.Name)
 
 							propLen := float32(0)
 							for _, item := range invprop.Items {
@@ -286,20 +291,20 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				// long processing
 				time.Sleep(2 * time.Second)
 
-				fmt.Printf("  ==> [%s] last processed key [%s]\n", time.Now(), t.keyToStr(lastProcessedKey))
+				printf("lastProcessedKey [%s]", t.keyToStr(lastProcessedKey))
 
 				// check time every 100 objects processed to halt
 				if processedCounter%countObjectsCheck == 0 {
-					fmt.Printf("  ==> [%s] checking time on counter [%d]\n", time.Now(), processedCounter)
+					printf("checking time on counter [%d]", processedCounter)
 
 					if time.Since(processingStarted) > durationProcessing {
-						fmt.Printf("  ==> [%s] duration exceeded\n", time.Now())
+						printf("processing duration exceeded")
 
 						// store checkpoint
 						if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
 							return false, err
 						}
-						fmt.Printf("  ==> [%s] marked progrees on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
+						printf("marked progrees on key [%s] counter [%d] checkpoint [%d]",
 							t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
 
 						nextCheckpoint++
@@ -311,14 +316,14 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 				}
 			}
 
-			fmt.Printf("  ==> outside cursor lastStoredKey [%s] lastProcessedKey [%s]\n\n",
+			printf("outside cursor lastStoredKey [%s] lastProcessedKey [%s]",
 				t.keyToStr(lastStoredKey), t.keyToStr(lastProcessedKey))
 
 			if !bytes.Equal(lastStoredKey, lastProcessedKey) {
 				if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
 					return false, err
 				}
-				fmt.Printf("  ==> [%s] marked progrees (dirty) on key [%s] counter [%d] checkpoint [%d]\n", time.Now(),
+				printf("marked progrees (dirty) on key [%s] counter [%d] checkpoint [%d]",
 					t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
 
 				nextCheckpoint++
@@ -335,30 +340,24 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 			if err = t.markFinished(shard); err != nil {
 				return err
 			}
-			fmt.Printf("  ==> [%s] marked finished\n", time.Now())
+			printf("marked finished")
 			break
 		}
 
 		timer := time.NewTimer(durationPause)
-		fmt.Printf("  ==> [%s] timer started\n", time.Now())
+		printf("timer started")
 		select {
 		case <-timer.C:
-			fmt.Printf("  ==> [%s] timer finished, continue\n", time.Now())
+			printf("timer finished, continue")
 		case <-ctx.Done():
-			fmt.Printf("  ==> [%s] context done before timer\n", time.Now())
+			printf("context done before timer")
 			timer.Stop()
 			err = ctx.Err()
 			return err
 		}
 	}
 
-	fmt.Printf("  ==> GREAT SUCCESS\n\n")
-
-	// fmt.Printf("  ==> time cursor [%s] checkpoint [%d] dirty [%v]\n\n", timeProcessingStarted, checkpoint, dirty)
-
-	// objectsBucket.IterateObjects()
-
-	// TODO handle dirty
+	printf("ShardInvertedReindexTask_MapToBlockmax::Reindex finshed; GREAT SUCCESS")
 	return nil
 }
 
