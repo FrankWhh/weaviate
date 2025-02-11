@@ -44,12 +44,12 @@ type ShardInvertedReindexTask2 interface {
 
 const (
 	filenameStarted    = "started.mig"
-	filenameInProgress = "inProgress.mig"
+	filenameInProgress = "progress.mig"
 	filenameFinished   = "finished.mig"
 
-	durationProcessing = 3 * time.Second
-	durationPause      = 2 * time.Second
-	countObjectsCheck  = 5
+	durationProcessing = 1 * time.Second
+	durationPause      = 5 * time.Second
+	countObjectsCheck  = 3
 	// durationProcessing = 5 * time.Minute
 	// durationPause      = 2 * time.Minute
 	// countObjectsCheck  = 100
@@ -113,8 +113,9 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) OnBeforeShard(ctx context.Conte
 	return nil
 }
 
-func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, shard ShardLike) error {
+func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, shard ShardLike) (time.Time, error) {
 	collectionName := shard.Index().Config.ClassName.String()
+	zerotime := time.Time{}
 
 	printf := func(str string, args ...any) {
 		fmt.Printf("  ==> [%s][%s][%s] %s\n",
@@ -128,12 +129,12 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	props, ok := t.propsByCollectionShard[collectionName][shard.Name()]
 	if !ok || len(props) == 0 {
 		printf("no props found")
-		return nil
+		return zerotime, nil
 	}
 
 	if t.isFinished(shard) {
 		printf("reindexing is marked finished")
-		return nil
+		return zerotime, nil
 	}
 
 	lastStoredKey := []byte{}
@@ -143,19 +144,19 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 
 	if !t.isStarted(shard) {
 		if err = t.markStarted(shard, migrationStarted); err != nil {
-			return err
+			return zerotime, err
 		}
 	} else if migrationStarted, err = t.readStarted(shard); err != nil {
-		return err
+		return zerotime, err
 	}
 
 	var lastProgressFilename string
 	if lastProgressFilename, err = t.lastInProgress(shard); err != nil {
-		return err
+		return zerotime, err
 	} else if lastProgressFilename != "" {
 		var lastCheckpoint int
 		if lastStoredKey, lastCheckpoint, err = t.readProgress(shard, lastProgressFilename); err != nil {
-			return err
+			return zerotime, err
 		}
 		nextCheckpoint = lastCheckpoint + 1
 	}
@@ -169,7 +170,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	addProps := additional.Properties{}
 
 	if err = ctx.Err(); err != nil {
-		return err
+		return zerotime, err
 	}
 
 	// create / load temp bucket for each property
@@ -182,7 +183,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 			lsmkv.WithDirtyThreshold(time.Duration(shard.Index().Config.MemtablesFlushDirtyAfter)*time.Second),
 			lsmkv.WithStrategy(lsmkv.StrategyInverted))
 		if err != nil {
-			return err
+			return zerotime, err
 		}
 
 		bucketsByPropName[prop.PropertyName] = store.Bucket(bucketName)
@@ -195,7 +196,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	processedCounter := 0
 
 	if err = ctx.Err(); err != nil {
-		return err
+		return zerotime, err
 	}
 
 	defer func() {
@@ -205,7 +206,7 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 		if err != nil && !bytes.Equal(lastStoredKey, lastProcessedKey) {
 			t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint)
 
-			printf("marked progrees (defer) on key [%s] counter [%d] checkpoint [%d]",
+			printf("marked progress (defer) on key [%s] counter [%d] checkpoint [%d]",
 				t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
 		}
 	}()
@@ -218,147 +219,133 @@ func (t *ShardInvertedReindexTask_MapToBlockmax) Reindex(ctx context.Context, sh
 	// }
 	// c.Close()
 
-	printf("main loop starting")
-	for {
-		if ok, err = func() (bool, error) {
-			printf("before cursor created")
-			cursor := objectsBucket.Cursor()
-			printf("after cursor created")
+	finished, err := func() (bool, error) {
+		printf("before cursor created")
+		cursor := objectsBucket.Cursor()
+		printf("after cursor created")
 
-			defer func() {
-				cursor.Close()
-				printf("cursor closed")
-			}()
-			processingStarted := time.Now()
+		defer func() {
+			cursor.Close()
+			printf("cursor closed")
+		}()
+		processingStarted := time.Now()
 
-			printf("searching key [%s]", t.keyToStr(lastStoredKey))
+		printf("searching key [%s]", t.keyToStr(lastStoredKey))
 
-			var k, v []byte
-			if len(lastStoredKey) == 0 {
-				k, v = cursor.First()
-			} else {
-				k, v = cursor.Seek(lastStoredKey)
-				if bytes.Equal(k, lastStoredKey) {
-					k, v = cursor.Next()
-				}
+		var k, v []byte
+		if len(lastStoredKey) == 0 {
+			k, v = cursor.First()
+		} else {
+			k, v = cursor.Seek(lastStoredKey)
+			if bytes.Equal(k, lastStoredKey) {
+				k, v = cursor.Next()
+			}
+		}
+
+		printf("cursor starting with key [%s]", t.keyToStr(k))
+
+		for ; k != nil; k, v = cursor.Next() {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			obj, err := storobj.FromBinaryOptional(v, addProps, propExtraction)
+			if err != nil {
+				return false, err
 			}
 
-			printf("cursor starting with key [%s]", t.keyToStr(k))
+			// fmt.Printf("  ==> creation time [%d][%s] update time [%d][%s]\n\n",
+			// 	obj.CreationTimeUnix(), time.UnixMilli(obj.CreationTimeUnix()),
+			// 	obj.LastUpdateTimeUnix(), time.UnixMilli(obj.LastUpdateTimeUnix()))
 
-			for ; k != nil; k, v = cursor.Next() {
-				if err := ctx.Err(); err != nil {
-					return false, err
-				}
-				obj, err := storobj.FromBinaryOptional(v, addProps, propExtraction)
+			// process only if update timestamp < migration start
+			if obj.LastUpdateTimeUnix() < migrationStarted.UnixMilli() {
+				props, _, err := shard.AnalyzeObject(obj)
 				if err != nil {
 					return false, err
 				}
 
-				// fmt.Printf("  ==> creation time [%d][%s] update time [%d][%s]\n\n",
-				// 	obj.CreationTimeUnix(), time.UnixMilli(obj.CreationTimeUnix()),
-				// 	obj.LastUpdateTimeUnix(), time.UnixMilli(obj.LastUpdateTimeUnix()))
+				for _, invprop := range props {
+					if bucket, ok := bucketsByPropName[invprop.Name]; ok {
+						printf("adding prop [%s]", invprop.Name)
 
-				// process only if update timestamp < migration start
-				if obj.LastUpdateTimeUnix() < migrationStarted.UnixMilli() {
-					props, _, err := shard.AnalyzeObject(obj)
-					if err != nil {
+						propLen := float32(0)
+						for _, item := range invprop.Items {
+							propLen += item.TermFrequency
+						}
+
+						for _, item := range invprop.Items {
+							pair := shard.pairPropertyWithFrequency(obj.DocID, item.TermFrequency, propLen)
+							if err := shard.addToPropertyMapBucket(bucket, pair, item.Data); err != nil {
+								return false, err
+							}
+						}
+					}
+				}
+			}
+
+			// all added
+			lastProcessedKey = t.cloneKey(k, lastProcessedKey)
+			processedCounter++
+
+			// long processing
+			time.Sleep(2 * time.Second)
+
+			printf("lastProcessedKey [%s]", t.keyToStr(lastProcessedKey))
+
+			// check time every 100 objects processed to halt
+			if processedCounter%countObjectsCheck == 0 {
+				printf("checking time on counter [%d]", processedCounter)
+
+				if time.Since(processingStarted) > durationProcessing {
+					printf("processing duration exceeded")
+
+					// store checkpoint
+					if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
 						return false, err
 					}
+					printf("marked progress on key [%s] counter [%d] checkpoint [%d]",
+						t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
 
-					for _, invprop := range props {
-						if bucket, ok := bucketsByPropName[invprop.Name]; ok {
-							printf("adding prop [%s]", invprop.Name)
-
-							propLen := float32(0)
-							for _, item := range invprop.Items {
-								propLen += item.TermFrequency
-							}
-
-							for _, item := range invprop.Items {
-								pair := shard.pairPropertyWithFrequency(obj.DocID, item.TermFrequency, propLen)
-								if err := shard.addToPropertyMapBucket(bucket, pair, item.Data); err != nil {
-									return false, err
-								}
-							}
-						}
-					}
-				}
-
-				// all added
-				lastProcessedKey = t.cloneKey(k, lastProcessedKey)
-				processedCounter++
-
-				// long processing
-				time.Sleep(2 * time.Second)
-
-				printf("lastProcessedKey [%s]", t.keyToStr(lastProcessedKey))
-
-				// check time every 100 objects processed to halt
-				if processedCounter%countObjectsCheck == 0 {
-					printf("checking time on counter [%d]", processedCounter)
-
-					if time.Since(processingStarted) > durationProcessing {
-						printf("processing duration exceeded")
-
-						// store checkpoint
-						if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
-							return false, err
-						}
-						printf("marked progrees on key [%s] counter [%d] checkpoint [%d]",
-							t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
-
-						nextCheckpoint++
-						lastStoredKey = t.cloneKey(lastProcessedKey, lastStoredKey)
-						processedCounter = 0
-						k, _ = cursor.Next()
-						break
-					}
+					nextCheckpoint++
+					lastStoredKey = t.cloneKey(lastProcessedKey, lastStoredKey)
+					processedCounter = 0
+					k, _ = cursor.Next()
+					break
 				}
 			}
-
-			printf("outside cursor lastStoredKey [%s] lastProcessedKey [%s]",
-				t.keyToStr(lastStoredKey), t.keyToStr(lastProcessedKey))
-
-			if !bytes.Equal(lastStoredKey, lastProcessedKey) {
-				if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
-					return false, err
-				}
-				printf("marked progrees (dirty) on key [%s] counter [%d] checkpoint [%d]",
-					t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
-
-				nextCheckpoint++
-				lastStoredKey = t.cloneKey(lastProcessedKey, lastStoredKey)
-				processedCounter = 0
-			}
-			if k == nil {
-				return false, nil
-			}
-			return true, nil
-		}(); err != nil {
-			return err
-		} else if !ok {
-			if err = t.markFinished(shard); err != nil {
-				return err
-			}
-			printf("marked finished")
-			break
 		}
 
-		timer := time.NewTimer(durationPause)
-		printf("timer started")
-		select {
-		case <-timer.C:
-			printf("timer finished, continue")
-		case <-ctx.Done():
-			printf("context done before timer")
-			timer.Stop()
-			err = ctx.Err()
-			return err
+		printf("outside cursor lastStoredKey [%s] lastProcessedKey [%s]",
+			t.keyToStr(lastStoredKey), t.keyToStr(lastProcessedKey))
+
+		if !bytes.Equal(lastStoredKey, lastProcessedKey) {
+			if err := t.markInProgress(shard, lastProcessedKey, processedCounter, nextCheckpoint); err != nil {
+				return false, err
+			}
+			printf("marked progress (dirty) on key [%s] counter [%d] checkpoint [%d]",
+				t.keyToStr(lastProcessedKey), processedCounter, nextCheckpoint)
+
+			nextCheckpoint++
+			lastStoredKey = t.cloneKey(lastProcessedKey, lastStoredKey)
+			processedCounter = 0
 		}
+
+		return k == nil, nil
+	}()
+	if err != nil {
+		return zerotime, err
+	}
+	if finished {
+		if err = t.markFinished(shard); err != nil {
+			return zerotime, err
+		}
+		printf("marked finished")
+		printf("ShardInvertedReindexTask_MapToBlockmax::Reindex all finished; GREAT SUCCESS")
+		return zerotime, nil
 	}
 
-	printf("ShardInvertedReindexTask_MapToBlockmax::Reindex finshed; GREAT SUCCESS")
-	return nil
+	printf("ShardInvertedReindexTask_MapToBlockmax::Reindex turn finished")
+	return time.Now().Add(durationPause), nil
 }
 
 func (t *ShardInvertedReindexTask_MapToBlockmax) keyToStr(uuidBytes []byte) string {

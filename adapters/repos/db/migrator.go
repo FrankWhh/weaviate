@@ -14,6 +14,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/adapters/repos/db/inverted"
+	"github.com/weaviate/weaviate/adapters/repos/db/priorityqueue"
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/dynamic"
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/flat"
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/hnsw"
@@ -892,12 +894,24 @@ func (r *Reindexer) OnBefore(ctx context.Context) error {
 	return errs.ToError()
 }
 
+/*
+
+when finished
+	return timestamp + error
+	if timestamp != nil (>0, whatever)
+		add to queue by timestamp + shard name
+
+
+*/
+
 func (r *Reindexer) Reindex(ctx context.Context) error {
 	fmt.Printf("  ==> STARTING REINDEX\n\n")
 
-	errsExt := errorcompounder.NewSafe()
+	errsExt := errorcompounder.New()
 
 	for _, name := range r.names {
+		errsTask := errorcompounder.NewSafe()
+
 		if err := ctx.Err(); err != nil {
 			// TODO aliszka:blockmax add task name?
 			errsExt.Add(err)
@@ -924,35 +938,148 @@ func (r *Reindexer) Reindex(ctx context.Context) error {
 		for _, index := range r.indexes {
 			index := index
 
+			printf := func(msg string, args ...any) {
+				fmt.Printf("  ### [%s][%s] %s\n", time.Now().Format(time.StampMicro),
+					index.Config.ClassName, fmt.Sprintf(msg, args...))
+			}
+			printf("loop starting")
+
 			if err := ctx.Err(); err != nil {
 				// TODO aliszka:blockamax add task name + collection name?
-				errsExt.Add(err)
+				errsTask.Add(err)
 				break
 			}
 
 			egExt.Go(func() error {
+				printf("ext routine starting")
+
 				if err := ctx.Err(); err != nil {
 					// TODO aliszka:blockamax add task name + collection name?
-					errsExt.Add(err)
+					errsTask.Add(err)
 					return nil
 				}
 
-				errsInt := errorcompounder.NewSafe()
+				lock := new(sync.Mutex)
+				queue := priorityqueue.NewMinWithId[string](16)
+				currentlyProcessing := 0
+
+				// TODO aliszka:blockmax handle shard release?
 				index.ForEachShard(func(shardName string, shard ShardLike) error {
+					printf("[%s][foreach] starting", shardName)
+
+					lock.Lock()
+					currentlyProcessing++
+					lock.Unlock()
+
 					egInt.Go(func() error {
-						errsInt.Add(task.Reindex(ctx, shard))
+						printf("[%s][foreach] int starting", shardName)
+						defer func() {
+							lock.Lock()
+							currentlyProcessing--
+							lock.Unlock()
+							printf("[%s][foreach] int finished", shardName)
+						}()
+
+						nextTime, err := task.Reindex(ctx, shard)
+						if err != nil {
+							errsTask.Add(err)
+						} else if !nextTime.IsZero() {
+							lock.Lock()
+							queue.InsertWithValue(uint64(nextTime.UnixMicro()), 0, shardName)
+							lock.Unlock()
+							printf("[%s][foreach] int queue insert, time [%s]", shardName, nextTime.Format(time.StampMicro))
+						}
 						return nil
 					})
+
+					printf("[%s][foreach] finished", shardName)
+
 					return ctx.Err()
 				})
-				errsExt.Add(errsInt.ToError())
 
+				for {
+					printf("[for] starting")
+					if err := ctx.Err(); err != nil {
+						errsTask.Add(err)
+						return nil
+					}
+
+					lock.Lock()
+					allDone := currentlyProcessing == 0 && queue.Len() == 0
+					lock.Unlock()
+
+					if allDone {
+						printf("[for] allDone; breaking")
+						break
+					}
+
+					shardName := ""
+					lock.Lock()
+					if queue.Len() > 0 && int64(queue.Top().ID) < time.Now().UnixMicro() {
+						printf("[for] ready for next")
+						item := queue.Pop()
+						shardName = item.Value
+					}
+					lock.Unlock()
+
+					if shardName != "" {
+						lock.Lock()
+						currentlyProcessing++
+						lock.Unlock()
+
+						egInt.Go(func() error {
+							printf("[for] int starting")
+							defer func() {
+								lock.Lock()
+								currentlyProcessing--
+								lock.Unlock()
+								printf("[for] int finished")
+							}()
+
+							// TODO aliszka:blockmax handle release
+							shard, release, err := index.GetShard(ctx, shardName)
+							if err != nil {
+								errsTask.Add(err)
+								return nil
+							}
+							defer release()
+
+							nextTime, err := task.Reindex(ctx, shard)
+							if err != nil {
+								errsTask.Add(err)
+							} else if !nextTime.IsZero() {
+								lock.Lock()
+								queue.InsertWithValue(uint64(nextTime.UnixMicro()), 0, shardName)
+								lock.Unlock()
+								printf("[%s][for] int queue insert, time [%s]", shardName, nextTime.Format(time.StampMicro))
+							}
+							return nil
+						})
+					} else {
+						timer := time.NewTimer(5 * time.Second)
+						printf("[for] timer started")
+						select {
+						case <-timer.C:
+							printf("[for] timer finished, continue")
+							// continue
+						case <-ctx.Done():
+							printf("[for] timer stopped, ctx")
+							timer.Stop()
+							errsTask.Add(ctx.Err())
+							return nil
+						}
+					}
+					printf("[for] finished")
+				}
+				printf("[for] outside")
 				return nil
 			})
 		}
 
 		egExt.Wait()
 		egInt.Wait()
+
+		errsExt.Add(errsTask.ToError())
 
 		fmt.Printf("  ==> FINISHED TASK [%s]\n\n", name)
 	}
@@ -969,7 +1096,7 @@ type ShardInvertedReindexTask3 interface {
 	OnBefore(ctx context.Context) error
 	OnBeforeShard(ctx context.Context, shard ShardLike) error
 
-	Reindex(ctx context.Context, shard ShardLike) error
+	Reindex(ctx context.Context, shard ShardLike) (time.Time, error)
 
 	// right now only OnResume is needed, but in the future more
 	// callbacks could be added
