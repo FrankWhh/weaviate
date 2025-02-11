@@ -893,6 +893,8 @@ func (r *Reindexer) OnBefore(ctx context.Context) error {
 }
 
 func (r *Reindexer) Reindex(ctx context.Context) error {
+	fmt.Printf("  ==> STARTING REINDEX\n\n")
+
 	errsExt := errorcompounder.NewSafe()
 
 	for _, name := range r.names {
@@ -911,6 +913,8 @@ func (r *Reindexer) Reindex(ctx context.Context) error {
 
 		task := r.tasks[name]
 
+		fmt.Printf("  ==> STARTING TASK [%s]\n\n", name)
+
 		egExt := enterrors.NewErrorGroupWrapper(r.logger)
 		egExt.SetLimit(concurrency.NUMCPU_2)
 
@@ -918,16 +922,19 @@ func (r *Reindexer) Reindex(ctx context.Context) error {
 		egInt.SetLimit(concurrency.NUMCPU)
 
 		for _, index := range r.indexes {
+			index := index
+
 			if err := ctx.Err(); err != nil {
 				// TODO aliszka:blockamax add task name + collection name?
 				errsExt.Add(err)
+				break
 			}
 
-			index := index
 			egExt.Go(func() error {
 				if err := ctx.Err(); err != nil {
 					// TODO aliszka:blockamax add task name + collection name?
 					errsExt.Add(err)
+					return nil
 				}
 
 				errsInt := errorcompounder.NewSafe()
@@ -943,7 +950,14 @@ func (r *Reindexer) Reindex(ctx context.Context) error {
 				return nil
 			})
 		}
+
+		egExt.Wait()
+		egInt.Wait()
+
+		fmt.Printf("  ==> FINISHED TASK [%s]\n\n", name)
 	}
+
+	fmt.Printf("  ==> FINISHED REINDEX err [%s]\n\n", errsExt.ToError())
 
 	return errsExt.ToError()
 }
