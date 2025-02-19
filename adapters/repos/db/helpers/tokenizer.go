@@ -61,7 +61,7 @@ func init_gse() {
 		gseTokenizerLock.Lock()
 		defer gseTokenizerLock.Unlock()
 		if gseTokenizer == nil {
-			seg, err := gse.New("ja")
+			seg, err := gse.New("zh")
 			if err != nil {
 				return //[]string{}
 			}
