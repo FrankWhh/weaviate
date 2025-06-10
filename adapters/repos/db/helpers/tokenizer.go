@@ -179,8 +179,7 @@ func tokenizeGSE(in string) []string {
 
 	terms = removeEmptyStrings(terms)
 
-	alpha := tokenizeWord(in)
-	return append(terms, alpha...)
+	return terms
 }
 
 type KagomeTokenizers struct {
