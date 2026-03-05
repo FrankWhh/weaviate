@@ -108,7 +108,7 @@ func init_gse() {
 	defer gseLock.Unlock()
 	if gseTokenizer == nil {
 		startTime := time.Now()
-		seg, err := gse.New("ja")
+		seg, err := gse.New("zh")
 		if err != nil {
 			return
 		}
@@ -275,7 +275,7 @@ func tokenizeGSE(in string) []string {
 	startTime := time.Now()
 	gseLock.Lock()
 	defer gseLock.Unlock()
-	terms := gseTokenizer.CutAll(in)
+	terms := gseTokenizer.CutSearch(in, true)
 
 	ret := removeEmptyStrings(terms)
 
