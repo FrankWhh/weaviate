@@ -16,12 +16,12 @@ docker buildx inspect --bootstrap
 VERSION="1.36.2.5"
 
 # 构建 amd64
-# docker buildx build \
-#   --platform linux/amd64 \
-#   --build-arg GIT_REVISION="$(git rev-parse HEAD)" \
-#   -t "semitechnologies/weaviate:${VERSION}" \
-#   --load \
-#   .
+docker buildx build \
+  --platform linux/amd64 \
+  --build-arg GIT_REVISION="$(git rev-parse HEAD)" \
+  -t "semitechnologies/weaviate:${VERSION}" \
+  --load \
+  .
 
 # 构建 arm64
 docker buildx build \
